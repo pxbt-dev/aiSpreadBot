@@ -120,6 +120,7 @@ public class LiveTradingEngine {
                     .subscribe(sentiment -> {
                         double consensus = wekaService.getConsensusScore("Weather", features);
                         double finalConfidence = (consensus * 0.7) + (sentiment * 0.3);
+                        currentConfidence = finalConfidence;
 
                         boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(WEATHER_TOKEN_ID, new ArrayList<>()));
                         log.info("Ensemble Brain: Consensus={}, Sentiment={} -> Confidence={}", 
