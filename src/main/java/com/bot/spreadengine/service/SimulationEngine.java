@@ -48,6 +48,9 @@ public class SimulationEngine {
     @Autowired
     private OllamaAnalysisService ollamaAnalysisService;
 
+    @Autowired
+    private ClaudeAnalysisService claudeAnalysisService;
+
     private final long startTime = System.currentTimeMillis();
     private final Random random = new Random();
     private final DecimalFormat df2 = new DecimalFormat("0.00");
@@ -327,7 +330,7 @@ public class SimulationEngine {
         stats.put("dps", df2.format(dps));
         stats.put("dph", df2.format(dps * 3600 * 0.8)); // Simulated hourly decay/variation
         stats.put("auditNote", liveTradingEngine.getCurrentAuditNote());
-        stats.put("ollamaModel", ollamaAnalysisService.getModelName());
+        stats.put("claudeModel", claudeAnalysisService.getModelName());
         stats.put("sentiment", liveTradingEngine.getSentimentScore());
         stats.put("aiConfidence", liveTradingEngine.getCurrentConfidence());
         stats.put("skippedMarkets", polymarketService.getSkippedMarketsCount());

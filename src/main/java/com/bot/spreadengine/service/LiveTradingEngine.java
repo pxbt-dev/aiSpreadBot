@@ -30,12 +30,13 @@ public class LiveTradingEngine {
     private final SimpMessagingTemplate messagingTemplate;
     private final HistoricalSolarService historyService;
     private final PositionService positionService;
+    private final MarketScannerService marketScanner;
 
-    public LiveTradingEngine(PolymarketService polymarketService, WeatherService weatherService, WekaAnalysisService wekaService, 
+    public LiveTradingEngine(PolymarketService polymarketService, WeatherService weatherService, WekaAnalysisService wekaService,
                              TechnicalAnalysisService taService, WyckoffService wyckoffService,
                              SpaceWeatherService spaceWeatherService, SentimentService sentimentService,
                              SimpMessagingTemplate messagingTemplate, HistoricalSolarService historyService,
-                             PositionService positionService) {
+                             PositionService positionService, MarketScannerService marketScanner) {
         this.polymarketService = polymarketService;
         this.weatherService = weatherService;
         this.wekaService = wekaService;
@@ -46,6 +47,7 @@ public class LiveTradingEngine {
         this.messagingTemplate = messagingTemplate;
         this.historyService = historyService;
         this.positionService = positionService;
+        this.marketScanner = marketScanner;
 
         // Phase 6: Sync historical solar data for ensemble training
         this.historyService.syncRecentHistory();
@@ -63,9 +65,7 @@ public class LiveTradingEngine {
     private final Map<String, List<Double[]>> priceBuffers = new ConcurrentHashMap<>();
     private static final int BUFFER_SIZE = 50;
 
-    // Real active Token IDs
-    private static final String POLITICS_TOKEN_ID = "16040015440196279900485035793550429453516625694844857319147506590755961451627";
-    private static final String WEATHER_TOKEN_ID = "46368744070631387314868557200103674213564381440952153040375462649565213460036";
+    // Token IDs are resolved dynamically by MarketScannerService at startup and refreshed hourly
 
     @Scheduled(fixedRate = 3600000) // Hourly Solar Update
     public void updateSolarData() {
@@ -80,11 +80,13 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 2000)
     public void executeMarketMaking() {
-        polymarketService.getMidpoint(POLITICS_TOKEN_ID)
+        String tokenId = marketScanner.getPrimaryTokenId();
+        if (tokenId == null) return;
+        polymarketService.getMidpoint(tokenId)
             .subscribe(midpoint -> {
-                addToBuffer(POLITICS_TOKEN_ID, midpoint, 100.0);
+                addToBuffer(tokenId, midpoint, 100.0);
                 
-                List<Double[]> history = priceBuffers.get(POLITICS_TOKEN_ID);
+                List<Double[]> history = priceBuffers.get(tokenId);
                 if (history != null && history.size() >= 10) {
                     Map<String, Double> ta = taService.analyzeOrderDepth("Politics", history);
                     WyckoffService.MarketPhase phase = wyckoffService.detectPhase(history);
@@ -106,8 +108,10 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 5000)
     public void executeWeatherArb() {
+        String tokenId = marketScanner.getSecondaryTokenId();
+        if (tokenId == null) return;
         weatherService.getPrecipitationProbability()
-            .zipWith(polymarketService.getMidpoint(WEATHER_TOKEN_ID).onErrorResume(e -> Mono.empty()))
+            .zipWith(polymarketService.getMidpoint(tokenId).onErrorResume(e -> Mono.empty()))
             .subscribe(tuple -> {
                 double noaaProb = tuple.getT1();
                 double marketProb = tuple.getT2();
@@ -122,7 +126,7 @@ public class LiveTradingEngine {
                         double finalConfidence = (consensus * 0.7) + (sentiment * 0.3);
                         currentConfidence = finalConfidence;
 
-                        boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(WEATHER_TOKEN_ID, new ArrayList<>()));
+                        boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(tokenId, new ArrayList<>()));
                         log.info("Ensemble Brain: Consensus={}, Sentiment={} -> Confidence={}", 
                             String.format("%.2f", consensus), String.format("%.2f", sentiment), String.format("%.2f", finalConfidence));
 
@@ -145,7 +149,7 @@ public class LiveTradingEngine {
                                                 new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
 
                                             // Unified Position Tracking
-                                            positionService.addTrade(WEATHER_TOKEN_ID, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
+                                            positionService.addTrade(tokenId, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
 
                                             messagingTemplate.convertAndSend("/topic/events", 
                                                 new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
@@ -159,7 +163,7 @@ public class LiveTradingEngine {
                                 log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}", 
                                     String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
                                 // Unified Position Tracking
-                                positionService.addTrade(WEATHER_TOKEN_ID, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
+                                positionService.addTrade(tokenId, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
 
                                 messagingTemplate.convertAndSend("/topic/events", 
                                     new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
@@ -194,7 +198,8 @@ public class LiveTradingEngine {
                 insight.setSentiment(sentiment);
                 this.sentimentScore = sentiment;
                 
-                List<Double[]> history = priceBuffers.getOrDefault(POLITICS_TOKEN_ID, new ArrayList<>());
+                String primary = marketScanner.getPrimaryTokenId();
+                List<Double[]> history = priceBuffers.getOrDefault(primary != null ? primary : "", new ArrayList<>());
                 if (!history.isEmpty()) {
                     Map<String, Double> ta = taService.analyzeOrderDepth("Politics", history);
                     insight.setRsi(ta.getOrDefault("RSI", 50.0));

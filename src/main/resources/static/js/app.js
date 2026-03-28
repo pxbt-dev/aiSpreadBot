@@ -112,7 +112,7 @@ function handleStats(stats) {
     lastStatsTime = Date.now();
     updateSkippedBadge(stats.skippedMarkets || 0);
 
-    setVal('val-ollama', stats.ollamaModel ? stats.ollamaModel + ': SYNCED' : 'READY');
+    setVal('val-ollama', stats.claudeModel ? stats.claudeModel + ': SYNCED' : 'READY');
     setVal('val-sentiment', stats.sentiment);
     setVal('val-bot-trades', stats.trades);
     setVal('ftr-trades', stats.trades);

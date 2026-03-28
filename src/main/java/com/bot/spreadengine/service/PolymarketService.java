@@ -70,6 +70,21 @@ public class PolymarketService {
     }
 
     /**
+     * Fetches active, non-closed markets from Gamma API ordered by liquidity.
+     */
+    public Mono<List<Map<String, Object>>> fetchActiveMarkets() {
+        return webClient.get()
+                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=50&order=liquidity&ascending=false")
+                .retrieve()
+                .bodyToMono(List.class)
+                .map(list -> (List<Map<String, Object>>) list)
+                .onErrorResume(e -> {
+                    log.error("Error fetching active markets: {}", e.getMessage());
+                    return Mono.just(Collections.emptyList());
+                });
+    }
+
+    /**
      * Fetches live prices for a specific market asset.
      */
     public Mono<Map<String, Object>> getMarketPrice(String assetId) {
