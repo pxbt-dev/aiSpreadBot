@@ -1,0 +1,22 @@
+server:
+  port: ${PORT:8080}
+
+polymarket:
+  api:
+    key: "${POLY_API_KEY:}"
+    secret: "${POLY_API_SECRET:}"
+    passphrase: "${POLY_API_PASSPHRASE:}"
+  wallet:
+    private-key: "${POLYGON_PRIVATE_KEY:}"
+    proxy-address: "${POLY_PROXY_ADDRESS:0x0dfded5361bc649e5b5680ac6802a3a56ac88ee9}" # Funder address
+  live-mode: true # Set to true to enable real trading
+  dry-run: true # Set to true to simulate trades without risking capital
+
+ollama:
+  enabled: false
+  model: qwen2.5-coder:7b
+
+anthropic:
+  api:
+    key: "${ANTHROPIC_API_KEY:}"
+  model: "claude-haiku-4-5-20251001"

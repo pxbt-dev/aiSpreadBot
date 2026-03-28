@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>S P R E A D E N G I N E</title>
+    <link rel="stylesheet" href="css/style.css?v=2">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="logo">
+                <span class="dot green"></span> S P R E A D &nbsp;&nbsp;E N G I N E
+            </div>
+            <div class="header-rows">
+                <div class="stats-row top-row">
+                    <div class="stat"><span class="label">ACCOUNT</span> <span class="value" id="hdr-account">DRY_RUN</span></div>
+                    <div class="stat"><span class="label">BANKROLL</span> <span class="value" id="val-bankroll">$16.69</span></div>
+                    <div class="stat"><span class="label">SESSION P&L</span> <span class="value" id="val-session-pnl-hdr">+$0.00</span></div>
+                    <div class="stat"><span class="label">TRADES</span> <span class="value" id="hdr-trades">0</span></div>
+                    <div class="stat"><span class="label">LATENCY</span> <span class="value" id="hdr-latency">2ms</span></div>
+                    <div class="stat"><span class="label">CONNECTED</span> <span class="value" id="hdr-clob">WS</span></div>
+                    <div class="stat"><span class="label">OLLAMA</span> <span class="value" id="val-ollama">READY</span></div>
+                    <div class="stat"><span class="label">VPIN</span> <span class="value" id="hdr-vpin">0.12</span></div>
+                    <div class="stat"><span class="label">UPTIME</span> <span class="value" id="hdr-uptime">00:00:00</span></div>
+                </div>
+                <div class="stats-row bottom-row">
+                    <div class="stat"><span class="label">SOLAR_X</span> <span class="value" id="solar-multiplier">1.2x</span></div>
+                    <div class="stat"><span class="label">PHASE</span> <span class="value" id="market-phase">ACCUMULATION</span></div>
+                    <div class="stat">
+                        <span class="label">AI_CONF</span>
+                        <div class="mini-meter"><div class="fill" id="conf-meter" style="width: 0%;"></div></div>
+                        <span class="value" id="conf-value">0%</span>
+                    </div>
+                    <div class="stat"><span class="label">SENTIMENT</span> <span id="sentiment-pill" class="sentiment-pill">NEUTRAL</span></div>
+                    <div class="stat"><span class="label">TA</span> <span id="rsi-badge" class="badge">RSI 50</span> <span id="macd-badge" class="badge">MACD BEAR</span></div>
+                    <div class="stat"><span class="label">OPS/SEC</span> <span class="value" id="hdr-ops">14,250</span></div>
+                    <div class="stat"><span class="label">FILL_RATE</span> <span class="value" id="hdr-fill">98.2%</span></div>
+                </div>
+            </div>
+            <div class="header-right-badges">
+            <div id="stale-badge" class="stale-badge" style="display:none;">NO SIGNAL</div>
+            <div id="skipped-badge" class="skipped-badge" style="display:none;">0 SKIPPED</div>
+            <div class="live-indicator test-mode"><span class="dot orange"></span> TEST MODE ACTIVE</div>
+        </div>
+        </header>
+
+        <div class="main-content">
+            <aside class="sidebar">
+                <div class="sidebar-header">EVENT STREAM</div>
+                <div class="stream-container" id="event-stream">
+                    <!-- Events -->
+                </div>
+            </aside>
+
+            <section class="graph-area">
+                <svg id="connections" width="100%" height="100%">
+                    <!-- SVG lines -->
+                </svg>
+
+                <div class="node" id="node-scanner" style="top: 15%; left: 25%;">
+                    <div class="node-title">SCANNER</div>
+                    <div class="node-val">1,247</div>
+                    <div class="node-sub">CONTRACTS</div>
+                </div>
+
+                <div class="node" id="node-post-bid" style="top: 30%; left: 40%;">
+                    <div class="node-title">POST BID</div>
+                    <div class="node-val">$0.47</div>
+                    <div class="node-sub">LIMIT ORDER</div>
+                </div>
+
+                <div class="node" id="node-weather" style="top: 55%; left: 25%;">
+                    <div class="node-title">WEATHER ARB</div>
+                    <div class="node-val" id="val-weather">+12pt</div>
+                    <div class="node-sub">NOAA vs MARKET</div>
+                </div>
+
+                <div class="node" id="node-post-ask" style="top: 60%; left: 40%;">
+                    <div class="node-title">POST ASK</div>
+                    <div class="node-val" id="val-post-ask">$0.53</div>
+                    <div class="node-sub">LIMIT ORDER</div>
+                </div>
+
+                <div class="node" id="node-revert" style="top: 78%; left: 32%;">
+                    <div class="node-title">MEAN REVERT</div>
+                    <div class="node-val" id="val-revert">-3.5σ</div>
+                    <div class="node-sub">DEVIATION</div>
+                </div>
+
+                <div class="node bot-node" id="node-bot" style="top: 45%; left: 58%;">
+                    <div class="node-title">BOT</div>
+                    <div class="node-val" id="val-bot-trades">0</div>
+                    <div class="node-sub">TRADES</div>
+                </div>
+
+                <div class="node brain-node" id="node-weka" style="top: 25%; left: 58%;">
+                    <div class="node-title">WEKA ML</div>
+                    <div class="node-val" id="val-accuracy">--</div>
+                    <canvas id="weka-sparkline" width="64" height="18" class="weka-sparkline"></canvas>
+                    <div class="node-sub">ENSEMBLE BRAIN</div>
+                </div>
+
+                <div class="node" id="node-inventory" style="top: 82%; left: 53%;">
+                    <div class="node-title">INVENTORY</div>
+                    <div class="node-val" id="val-inventory">-24</div>
+                    <div class="node-sub">SKEW BALANCE</div>
+                </div>
+
+                <div class="node" id="node-vpin" style="top: 80%; left: 70%;">
+                    <div class="node-title">VPIN</div>
+                    <div class="node-val" id="val-vpin">0.35</div>
+                    <div class="node-sub">FLOW TOXICITY</div>
+                </div>
+
+                <div class="node" id="node-spread" style="top: 35%; left: 78%;">
+                    <div class="node-title">SPREAD</div>
+                    <div class="node-val" id="val-spreads">$0.055</div>
+                    <div class="node-sub">CAPTURED</div>
+                </div>
+
+                <div class="node" id="node-profit" style="top: 38%; left: 90%;">
+                    <div class="node-title">PROFIT</div>
+                    <div class="node-val" id="val-profit">+$0.00</div>
+                    <div class="node-sub">ACCUMULATED</div>
+                </div>
+
+                <div class="node" id="node-bankroll" style="top: 58%; left: 88%;">
+                    <div class="node-title">BANKROLL</div>
+                    <div class="node-val" id="val-bankroll-node">$16.69</div>
+                    <div class="node-sub">PROTECTED</div>
+                </div>
+
+                <div class="node" id="node-kill" style="top: 78%; left: 88%;">
+                    <div class="node-title">KILLSWITCH</div>
+                    <div class="node-val">ARMED</div>
+                    <div class="node-sub">SAFE</div>
+                </div>
+            </section>
+        </div>
+
+        <div id="trades-panel" class="trades-panel">
+            <div class="panel-header">
+                <div class="tabs">
+                    <button id="tab-open" class="tab-btn active" onclick="switchTab('open')">OPEN POSITIONS</button>
+                    <button id="tab-history" class="tab-btn" onclick="switchTab('history')">TRADE HISTORY</button>
+                </div>
+            </div>
+            <div class="table-container" id="container-open">
+                <table id="positions-table">
+                    <thead>
+                        <tr>
+                            <th>ASSET</th>
+                            <th>SIDE</th>
+                            <th>SIZE</th>
+                            <th>ENTRY</th>
+                            <th>MARK</th>
+                            <th>UNREALIZED P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-body">
+                        <!-- Positions rendered here -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="table-container" id="container-history" style="display: none;">
+                <table id="history-table">
+                    <thead>
+                        <tr>
+                            <th>TIME</th>
+                            <th>ASSET</th>
+                            <th>SIDE</th>
+                            <th>QTY</th>
+                            <th>PRICE</th>
+                            <th>REALIZED P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-body">
+                        <!-- History rendered here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <footer>
+            <div class="footer-status-left">
+                <span>SCANNER ACTIVE</span> | <span>VPIN ARMED</span> | <span>KILL SWITCH READY</span> | <span>INVENTORY BALANCED</span>
+            </div>
+
+            <div class="session-pnl-container">
+                    <span id="val-session-pnl-ftr" class="session-pnl">+$0.00</span>
+                <div class="session-sub">SESSION P&L</div>
+            </div>
+
+            <div class="footer-status-right">
+                <span>TRADES <span id="ftr-trades">3</span></span> | <span>FILL <span id="ftr-fill">$0.00</span></span>
+            </div>
+        </footer>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <script src="js/app.js?v=2"></script>
+</body>
+</html>
