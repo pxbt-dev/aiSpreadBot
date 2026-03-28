@@ -17,6 +17,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        registry.addEndpoint("/spreadbot-ws").withSockJS();
+        registry.addEndpoint("/spreadbot-ws")
+                .setAllowedOriginPatterns("*")
+                .withSockJS();
     }
 }
