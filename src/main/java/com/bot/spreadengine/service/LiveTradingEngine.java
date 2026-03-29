@@ -154,15 +154,20 @@ public class LiveTradingEngine {
                 double normalizedTemp = Math.max(0.0, Math.min(1.0, (tempC + 20.0) / 60.0));
                 double[] features = new double[]{noaaProb, normalizedTemp, humidity, solarMultiplier};
 
-                sentimentService.getSentimentScore("NYC Rain Probability")
-                    .subscribe(sentiment -> {
-                        double consensus = wekaService.getConsensusScore("Weather", features);
-                        double finalConfidence = (consensus * 0.7) + (sentiment * 0.3);
-                        currentConfidence = finalConfidence;
+                // Weather arb confidence = WEKA physics score (80%) + normalised gap edge (20%)
+                // Sentiment is NOT used here — weather outcomes are physics, not narrative
+                double consensus = wekaService.getConsensusScore("Weather", features);
+                // Gap bonus: scales from 0 at 16% gap up to 1.0 at 50%+ gap
+                double gapBonus = Math.min(1.0, Math.max(0.0, (gap - 0.16) / 0.34));
+                double finalConfidence = (consensus * 0.8) + (gapBonus * 0.2);
+                currentConfidence = finalConfidence;
 
-                        boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(tokenId, new ArrayList<>()));
-                        log.info("Ensemble Brain: Consensus={}, Sentiment={} -> Confidence={}",
-                            String.format("%.2f", consensus), String.format("%.2f", sentiment), String.format("%.2f", finalConfidence));
+                boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(tokenId, new ArrayList<>()));
+                log.info("Weather Arb Brain: WEKA={}, Gap={:.1f}% (bonus={:.2f}) -> Confidence={}",
+                    String.format("%.2f", consensus), gap * 100, gapBonus, String.format("%.2f", finalConfidence));
+
+                {   // scope block replaces the old sentiment subscribe
+                    double sentiment = 0.5; // kept for Claude audit call signature only
 
                         if (gap >= 0.16 && !isSpring && finalConfidence > 0.6) {
                             double kellySize = (positionService.getBankroll() * 0.1) * finalConfidence;
@@ -207,7 +212,7 @@ public class LiveTradingEngine {
                                     new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                             }
                         }
-                    }, error -> log.error("Error in sentimentService inside weather arb: {}", error.getMessage()));
+                }   // end scope block
             }, error -> log.error("Error in executeWeatherArb: {}", error.getMessage()));
     }
 
@@ -238,28 +243,23 @@ public class LiveTradingEngine {
     }
 
     private void runAiInsightsBroadcast(double[] features) {
+        // Confidence mirrors the arb formula: WEKA physics 80%, no sentiment for weather
         double consensus = wekaService.getConsensusScore("Weather", features);
-        
-        sentimentService.getSentimentScore("Market General")
-            .subscribe(sentiment -> {
-                double blendedConfidence = (consensus * 0.7) + (sentiment * 0.3);
-                this.currentConfidence = blendedConfidence;
-                this.sentimentScore = sentiment;
+        this.currentConfidence = consensus;
 
-                AiInsightEvent insight = new AiInsightEvent();
-                insight.setConfidence((int)(blendedConfidence * 100));
-                insight.setSentiment(sentiment);
-                
-                String primary = marketScanner.getPrimaryTokenId();
-                List<Double[]> history = priceBuffers.getOrDefault(primary != null ? primary : "", new ArrayList<>());
-                if (!history.isEmpty()) {
-                    Map<String, Double> ta = taService.analyzeOrderDepth("Politics", history);
-                    insight.setRsi(ta.getOrDefault("RSI", 50.0));
-                    insight.setMacd(ta.getOrDefault("MACD", 0.0) > 0 ? "BULL" : "BEAR");
-                }
+        AiInsightEvent insight = new AiInsightEvent();
+        insight.setConfidence((int)(consensus * 100));
+        insight.setSentiment(0.5); // neutral placeholder — sentiment not used for weather arb
 
-                messagingTemplate.convertAndSend("/topic/ai-insights", insight);
-            }, error -> log.error("Error in broadcastAiInsights: {}", error.getMessage()));
+        String primary = marketScanner.getPrimaryTokenId();
+        List<Double[]> history = priceBuffers.getOrDefault(primary != null ? primary : "", new ArrayList<>());
+        if (!history.isEmpty()) {
+            Map<String, Double> ta = taService.analyzeOrderDepth("Politics", history);
+            insight.setRsi(ta.getOrDefault("RSI", 50.0));
+            insight.setMacd(ta.getOrDefault("MACD", 0.0) > 0 ? "BULL" : "BEAR");
+        }
+
+        messagingTemplate.convertAndSend("/topic/ai-insights", insight);
     }
 
     private void addToBuffer(String tokenId, double price, double volume) {

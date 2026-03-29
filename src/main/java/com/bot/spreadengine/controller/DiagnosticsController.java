@@ -2,6 +2,7 @@ package com.bot.spreadengine.controller;
 
 import com.bot.spreadengine.service.*;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
@@ -29,6 +30,9 @@ public class DiagnosticsController {
     private final WekaAnalysisService wekaService;
     private final ClaudeAnalysisService claudeAnalysisService;
     private final SpaceWeatherService spaceWeatherService;
+
+    @Value("${anthropic.api.key:}")
+    private String anthropicApiKey;
 
     public DiagnosticsController(PositionService positionService,
                                  MarketScannerService marketScanner,
@@ -163,6 +167,16 @@ public class DiagnosticsController {
             // Kill switch
             d.put("killSwitchActive", positionService.isKillSwitchActive());
 
+            // API key status
+            boolean keyLoaded = anthropicApiKey != null && !anthropicApiKey.isEmpty();
+            d.put("anthropicKeyLoaded", keyLoaded);
+            if (keyLoaded) {
+                d.put("anthropicKeyPrefix", anthropicApiKey.substring(0, Math.min(12, anthropicApiKey.length())) + "...");
+            }
+
+            // Confidence formula explanation
+            d.put("confidenceFormula", "WEKA(80%) + gapBonus(20%) — sentiment removed, weather is physics not narrative");
+
             // Verdict
             boolean wouldTrade = secondary != null && gap >= 0.16 && confidence > 0.6
                 && !positionService.isKillSwitchActive();
@@ -171,7 +185,7 @@ public class DiagnosticsController {
                 List<String> blockers = new ArrayList<>();
                 if (secondary == null) blockers.add("No secondary market found by scanner");
                 if (gap < 0.16) blockers.add(String.format("Gap %.1f%% < 16%% threshold", gap * 100));
-                if (confidence <= 0.6) blockers.add(String.format("Confidence %.0f%% <= 60%% threshold (set ANTHROPIC_API_KEY to get real sentiment)", confidence * 100));
+                if (confidence <= 0.6) blockers.add(String.format("Confidence %.0f%% <= 60%% threshold — WEKA score too low or gap bonus insufficient", confidence * 100));
                 if (positionService.isKillSwitchActive()) blockers.add("Kill switch active");
                 d.put("blockers", blockers);
             }
