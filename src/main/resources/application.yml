@@ -1,0 +1,11 @@
+spring:
+  profiles:
+    active: live
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    try-it-out-enabled: true
+  api-docs:
+    path: /v3/api-docs
+  use-management-port: false
