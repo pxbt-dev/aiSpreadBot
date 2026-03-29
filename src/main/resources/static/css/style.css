@@ -435,6 +435,20 @@ td {
     opacity: 0.85;
 }
 
+/* Kill switch active state */
+#node-kill.kill-active {
+    border-color: var(--loss-red) !important;
+    box-shadow: 0 0 18px rgba(255,113,113,0.7), inset 0 0 10px rgba(255,113,113,0.15);
+    animation: kill-pulse 0.8s ease-in-out infinite alternate;
+}
+#node-kill.kill-active .node-val {
+    color: var(--loss-red);
+}
+@keyframes kill-pulse {
+    from { box-shadow: 0 0 12px rgba(255,113,113,0.5); }
+    to   { box-shadow: 0 0 28px rgba(255,113,113,0.9); }
+}
+
 /* Stale data dimming */
 body.is-stale .node {
     opacity: 0.45;

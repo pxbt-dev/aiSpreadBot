@@ -58,6 +58,9 @@ public class LiveTradingEngine {
     @Autowired
     private ClaudeAnalysisService claudeAnalysisService;
 
+    @Autowired
+    private RiskManagementService riskManagementService;
+
     private double currentConfidence = 0.0;
     private String currentAuditNote = "READY";
     private double sentimentScore = 0.0;
@@ -106,6 +109,9 @@ public class LiveTradingEngine {
             }, error -> log.error("Error in executeMarketMaking: {}", error.getMessage()));
     }
 
+    // Gap threshold below which we consider the arb closed and exit any open position
+    private static final double GAP_CLOSE_THRESHOLD = 0.05;
+
     @Scheduled(fixedRate = 5000)
     public void executeWeatherArb() {
         String tokenId = marketScanner.getSecondaryTokenId();
@@ -117,9 +123,25 @@ public class LiveTradingEngine {
                 double marketProb = tuple.getT2();
                 double gap = Math.abs(noaaProb - marketProb);
 
+                // Gap-reversal exit: if the arb has closed, exit any open position
+                PositionService.Position openPos = positionService.getPositionMap().get(tokenId);
+                if (openPos != null && gap < GAP_CLOSE_THRESHOLD) {
+                    log.info("📉 ARB CLOSED (gap={:.3f}) — exiting {} x{}", gap, openPos.getTicker(), openPos.getSize());
+                    positionService.addTrade(tokenId, openPos.getTicker(), "SELL", openPos.getSize(), marketProb);
+                    messagingTemplate.convertAndSend("/topic/events",
+                        new SpreadEvent("TRADE", String.format("ARB CLOSED EXIT: gap=%.1f%% @ $%.3f", gap * 100, marketProb), 0));
+                    return;
+                }
+
+                // Kill switch: do not enter new positions
+                if (riskManagementService.isKillSwitchActive()) {
+                    log.warn("☠️ Kill switch active — skipping weather arb entry");
+                    return;
+                }
+
                 // AI ENSEMBLE CONSENSUS
                 double[] features = new double[]{noaaProb, 0.2, 0.4, solarMultiplier};
-                
+
                 sentimentService.getSentimentScore("NYC Rain Probability")
                     .subscribe(sentiment -> {
                         double consensus = wekaService.getConsensusScore("Weather", features);
@@ -127,45 +149,49 @@ public class LiveTradingEngine {
                         currentConfidence = finalConfidence;
 
                         boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(tokenId, new ArrayList<>()));
-                        log.info("Ensemble Brain: Consensus={}, Sentiment={} -> Confidence={}", 
+                        log.info("Ensemble Brain: Consensus={}, Sentiment={} -> Confidence={}",
                             String.format("%.2f", consensus), String.format("%.2f", sentiment), String.format("%.2f", finalConfidence));
 
                         if (gap >= 0.16 && !isSpring && finalConfidence > 0.6) {
-                            double kellySize = (positionService.getBankroll() * 0.1) * (finalConfidence); 
-                            
+                            double kellySize = (positionService.getBankroll() * 0.1) * finalConfidence;
+                            double tradePrice = tuple.getT2();
+                            int qty = tradePrice > 0 ? (int)(kellySize / tradePrice) : 0;
+
+                            // Position cap: don't pile into the same token beyond 25% of bankroll
+                            if (qty <= 0 || riskManagementService.isPositionCapReached(tokenId, kellySize)) {
+                                log.warn("⚠️ POSITION CAP reached for {} — skipping entry", tokenId);
+                                messagingTemplate.convertAndSend("/topic/events",
+                                    new SpreadEvent("SKIPPED", "POSITION CAP: max exposure reached", 0));
+                                return;
+                            }
+
                             if (finalConfidence >= 0.85) {
-                                claudeAnalysisService.auditTrade(solarMultiplier, consensus, sentiment, 
-                                                                 "BUY", kellySize, finalConfidence, gap, 
-                                                                 tuple.getT1(), tuple.getT2())
+                                claudeAnalysisService.auditTrade(solarMultiplier, consensus, sentiment,
+                                                                 "BUY", kellySize, finalConfidence, gap,
+                                                                 noaaProb, marketProb)
                                     .subscribe(auditResult -> {
                                         boolean auditPass = (boolean) auditResult.get("auditPass");
                                         currentAuditNote = (String) auditResult.get("note");
-                                        
+
                                         if (auditPass) {
-                                            log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}", 
+                                            log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}",
                                                 String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
-                                            
-                                            messagingTemplate.convertAndSend("/topic/events", 
+                                            messagingTemplate.convertAndSend("/topic/events",
                                                 new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
-
-                                            // Unified Position Tracking
-                                            positionService.addTrade(tokenId, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
-
-                                            messagingTemplate.convertAndSend("/topic/events", 
+                                            positionService.addTrade(tokenId, "Weather", "BUY", qty, tradePrice);
+                                            messagingTemplate.convertAndSend("/topic/events",
                                                 new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                                         } else {
                                             log.warn("🛑 CLAUDE VETO: {}", currentAuditNote);
-                                            messagingTemplate.convertAndSend("/topic/events", 
+                                            messagingTemplate.convertAndSend("/topic/events",
                                                 new SpreadEvent("AUDIT_VETO", "CLAUDE VETO: " + currentAuditNote.replace("AI AUDITED: ", "").replace("AUDIT BLOCKED ", ""), 0));
                                         }
                                     }, error -> log.error("Error in auditTrade: {}", error.getMessage()));
                             } else {
-                                log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}", 
+                                log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}",
                                     String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
-                                // Unified Position Tracking
-                                positionService.addTrade(tokenId, "Weather", "BUY", (int)(kellySize / tuple.getT2()), tuple.getT2());
-
-                                messagingTemplate.convertAndSend("/topic/events", 
+                                positionService.addTrade(tokenId, "Weather", "BUY", qty, tradePrice);
+                                messagingTemplate.convertAndSend("/topic/events",
                                     new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                             }
                         }
@@ -193,10 +219,13 @@ public class LiveTradingEngine {
         
         sentimentService.getSentimentScore("Market General")
             .subscribe(sentiment -> {
-                AiInsightEvent insight = new AiInsightEvent();
-                insight.setConfidence((int)(consensus * 100));
-                insight.setSentiment(sentiment);
+                double blendedConfidence = (consensus * 0.7) + (sentiment * 0.3);
+                this.currentConfidence = blendedConfidence;
                 this.sentimentScore = sentiment;
+
+                AiInsightEvent insight = new AiInsightEvent();
+                insight.setConfidence((int)(blendedConfidence * 100));
+                insight.setSentiment(sentiment);
                 
                 String primary = marketScanner.getPrimaryTokenId();
                 List<Double[]> history = priceBuffers.getOrDefault(primary != null ? primary : "", new ArrayList<>());

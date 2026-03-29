@@ -242,6 +242,13 @@ function handleEvent(event) {
         const phase = event.message.split('Phase: ')[1].replace(']', '');
         document.getElementById('market-phase').innerText = phase;
     }
+    if (event.type === 'KILL_SWITCH') {
+        const killEl = document.getElementById('node-kill');
+        if (killEl) { killEl.classList.add('kill-active'); }
+    }
+    if (event.type === 'STOP_LOSS' || event.type === 'TAKE_PROFIT') {
+        triggerNodePulse('node-profit');
+    }
 }
 
 function addLogEntry(event) {
@@ -254,11 +261,13 @@ function addLogEntry(event) {
     div.className = 'log-entry';
     
     let msgClass = '';
-    if (event.type === 'SPREAD' || event.type === 'MEAN_REVERT' || event.type === 'WEATHER_ARB' || event.type === 'TRADE' || event.type === 'TEST_FILL' || event.type === 'AUDIT_PASS') {
+    if (event.type === 'SPREAD' || event.type === 'MEAN_REVERT' || event.type === 'WEATHER_ARB' || event.type === 'TRADE' || event.type === 'TEST_FILL' || event.type === 'AUDIT_PASS' || event.type === 'TAKE_PROFIT') {
         msgClass = 'green';
     } else if (event.type === 'SOLAR_UPDATE') {
         msgClass = 'blue';
-    } else if (event.type === 'AUDIT_VETO') {
+    } else if (event.type === 'AUDIT_VETO' || event.type === 'STOP_LOSS') {
+        msgClass = 'loss-red';
+    } else if (event.type === 'KILL_SWITCH') {
         msgClass = 'loss-red';
     }
     

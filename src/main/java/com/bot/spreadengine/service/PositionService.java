@@ -14,7 +14,11 @@ public class PositionService {
 
     private final Map<String, Position> openPositions = new ConcurrentHashMap<>();
     private final java.util.List<TradeRecord> tradeHistory = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-    private double bankroll = 16.69;
+    public static final double INITIAL_BANKROLL = 16.69;
+    // Kill switch trips when bankroll drops 40% below starting value
+    private static final double KILL_SWITCH_DRAWDOWN_PCT = 0.40;
+
+    private double bankroll = INITIAL_BANKROLL;
     private double totalProfit = 0.0;
     private double totalVolume = 0.0;
     private int totalTrades = 0;
@@ -133,6 +137,10 @@ public class PositionService {
         return new java.util.ArrayList<>(tradeHistory);
     }
 
+    public boolean isKillSwitchActive() {
+        return bankroll < INITIAL_BANKROLL * (1.0 - KILL_SWITCH_DRAWDOWN_PCT);
+    }
+
     public Map<String, Position> getPositionMap() { return openPositions; }
     public void resetSession() {
         openPositions.clear();
@@ -140,7 +148,7 @@ public class PositionService {
         this.totalProfit = 0.0;
         this.totalVolume = 0.0;
         this.totalTrades = 0;
-        this.bankroll = 16.69;
+        this.bankroll = INITIAL_BANKROLL;
         log.info("🧹 Session Reset: Clean Slate Initialized.");
     }
 }
