@@ -28,8 +28,12 @@ public class MarketScannerService {
     // Keywords that identify weather / precipitation markets
     private static final List<String> WEATHER_KEYWORDS = List.of(
         "rain", "precip", "snow", "storm", "hurricane", "flood",
-        "temperature", "weather", "celsius", "fahrenheit", "drought"
+        "temperature", "weather", "celsius", "fahrenheit", "drought",
+        "wind", "tornado", "blizzard", "hail", "fog", "thunder", "lightning",
+        "inches", "wildfire", "freeze", "frost", "cold", "hot", "heat"
     );
+
+    private static final double MIN_LIQUIDITY = 10.0; // lowered from 100 — weather markets are niche
 
     @PostConstruct
     public void init() {
@@ -48,7 +52,12 @@ public class MarketScannerService {
                 double liquidity = toDouble(market.getOrDefault("liquidity", 0));
 
                 // Only consider binary markets (2 tokens) with meaningful liquidity
-                if (tokens.size() < 2 || liquidity < 100) return Mono.empty();
+                if (tokens.size() < 2 || liquidity < MIN_LIQUIDITY) {
+                    if (isWeatherMarket(question) && liquidity > 0) {
+                        log.debug("⚠️ Skipped low-liquidity weather market (${} liq): {}", liquidity, question);
+                    }
+                    return Mono.empty();
+                }
 
                 // Pick the YES token (first token)
                 String tokenId = (String) tokens.get(0).get("token_id");
@@ -69,6 +78,11 @@ public class MarketScannerService {
             .take(10) // Wider net so we can split primary/secondary properly
             .collectList()
             .subscribe(markets -> {
+                long weatherCount = markets.stream().filter(ScannedMarket::isWeather).count();
+                log.info("🔍 Scanner top-10 candidates: {} total, {} weather", markets.size(), weatherCount);
+                markets.forEach(m -> log.info("  candidate [weather={}, score={:.0f}, mid={:.3f}] {}",
+                    m.isWeather(), m.score(), m.mid(), m.question()));
+
                 if (markets.isEmpty()) {
                     log.warn("⚠️ Scanner found no tradeable markets — keeping existing tokens");
                     return;
@@ -88,14 +102,20 @@ public class MarketScannerService {
                     .orElse(markets.stream()
                         .filter(m -> !m.tokenId().equals(primary.tokenId()))
                         .findFirst()
-                        .orElse(primary));
+                        .orElse(null));
 
                 activeMarkets.add(primary);
-                if (!secondary.tokenId().equals(primary.tokenId())) activeMarkets.add(secondary);
+                if (secondary != null && !secondary.tokenId().equals(primary.tokenId())) {
+                    activeMarkets.add(secondary);
+                }
 
                 log.info("✅ Scanner selected {} markets:", activeMarkets.size());
-                activeMarkets.forEach(m -> log.info("  → [score={:.2f}, mid={}, weather={}] {}  token={}",
-                        m.score(), m.mid(), m.isWeather(), m.question(), m.tokenId()));
+                activeMarkets.forEach(m -> log.info("  → [{}] mid={:.3f} — {}",
+                    m.isWeather() ? "WEATHER/ARB" : "PRIMARY/MM", m.mid(), m.question()));
+
+                if (weatherCount == 0) {
+                    log.warn("⚠️ No weather markets found in top 200 active markets — weather arb disabled until next scan");
+                }
             }, e -> log.error("Market scan failed: {}", e.getMessage()));
     }
 

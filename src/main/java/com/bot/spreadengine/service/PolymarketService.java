@@ -74,7 +74,7 @@ public class PolymarketService {
      */
     public Mono<List<Map<String, Object>>> fetchActiveMarkets() {
         return webClient.get()
-                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=50&order=liquidity&ascending=false")
+                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=200&order=liquidity&ascending=false")
                 .retrieve()
                 .bodyToMono(List.class)
                 .map(list -> (List<Map<String, Object>>) list)
