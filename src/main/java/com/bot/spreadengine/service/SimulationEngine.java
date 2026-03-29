@@ -286,8 +286,9 @@ public class SimulationEngine {
     public void simulateWeatherArb() {
         if (random.nextDouble() > 0.7) {
             int gap = 10 + random.nextInt(15);
-            log.info("PRIVATE WEATHER ARB OPPORTUNITY: gap +{}pt NOAA", gap);
-            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("WEATHER_ARB", String.format("WEATHER gap +%dpt NOAA", gap), gap));
+            log.debug("SIM WEATHER ARB noise: gap +{}pt", gap);
+            // Use SIM_ prefix so UI can distinguish from real LiveTradingEngine arb events
+            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("SIM_WEATHER_ARB", String.format("[SIM] WEATHER gap +%dpt NOAA", gap), gap));
         }
     }
     
@@ -328,7 +329,10 @@ public class SimulationEngine {
         stats.put("ops", 14000 + random.nextInt(1500));
         stats.put("fillRate", df2.format(96.0 + random.nextDouble() * 3.0));
         stats.put("dps", df2.format(dps));
-        stats.put("dph", df2.format(dps * 3600 * 0.8)); // Simulated hourly decay/variation
+        stats.put("dph", df2.format(dps * 3600 * 0.8));
+        // Dynamic spread = base 0.04 × solar multiplier (mirrors LiveTradingEngine logic)
+        double solarMult = liveTradingEngine.getSolarMultiplier();
+        stats.put("spread", df3.format(0.04 * solarMult));
         stats.put("auditNote", liveTradingEngine.getCurrentAuditNote());
         stats.put("claudeModel", claudeAnalysisService.getModelName());
         stats.put("sentiment", liveTradingEngine.getSentimentScore());

@@ -114,8 +114,12 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 5000)
     public void executeWeatherArb() {
-        String tokenId = marketScanner.getSecondaryTokenId();
-        if (tokenId == null) return;
+        MarketScannerService.ScannedMarket market = marketScanner.getSecondaryMarket();
+        if (market == null) return;
+        String tokenId = market.tokenId();
+        String marketTicker = market.question().length() > 40
+            ? market.question().substring(0, 37) + "..."
+            : market.question();
         // Fetch full NOAA conditions (precip, tempC, humidity) alongside the market mid
         weatherService.getCurrentConditions()
             .zipWith(polymarketService.getMidpoint(tokenId).onErrorResume(e -> Mono.empty()))
@@ -186,7 +190,7 @@ public class LiveTradingEngine {
                                                 String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
                                             messagingTemplate.convertAndSend("/topic/events",
                                                 new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
-                                            positionService.addTrade(tokenId, "Weather", "BUY", qty, tradePrice);
+                                            positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
                                             messagingTemplate.convertAndSend("/topic/events",
                                                 new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                                         } else {
@@ -198,7 +202,7 @@ public class LiveTradingEngine {
                             } else {
                                 log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}",
                                     String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
-                                positionService.addTrade(tokenId, "Weather", "BUY", qty, tradePrice);
+                                positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
                                 messagingTemplate.convertAndSend("/topic/events",
                                     new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                             }
@@ -219,6 +223,7 @@ public class LiveTradingEngine {
     public double getCurrentConfidence() { return currentConfidence; }
     public String getCurrentAuditNote() { return currentAuditNote; }
     public double getSentimentScore() { return sentimentScore; }
+    public double getSolarMultiplier() { return solarMultiplier; }
 
     @Scheduled(fixedRate = 5000)
     public void broadcastAiInsights() {

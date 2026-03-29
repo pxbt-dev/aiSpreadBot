@@ -91,8 +91,12 @@ public class SentimentService {
                     }
                 })
                 .onErrorResume(e -> {
-                    log.error("Sentiment service error", e);
-                    return Mono.just(0.5); // Neutral fallback
+                    if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException wcre) {
+                        log.error("Sentiment API error {} — body: {}", wcre.getStatusCode(), wcre.getResponseBodyAsString());
+                    } else {
+                        log.error("Sentiment service error: {}", e.getMessage());
+                    }
+                    return Mono.just(0.5);
                 });
     }
 }

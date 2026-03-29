@@ -109,11 +109,57 @@ public class ClaudeAnalysisService {
                     }
                 })
                 .onErrorResume(e -> {
-                    log.error("Claude connection failed or timed out", e);
+                    if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException wcre) {
+                        log.error("Claude API error {} — body: {}", wcre.getStatusCode(), wcre.getResponseBodyAsString());
+                    } else {
+                        log.error("Claude connection failed or timed out: {}", e.getMessage());
+                    }
                     Map<String, Object> result = new HashMap<>();
                     result.put("auditPass", false);
                     result.put("note", "AUDIT BLOCKED (OFFLINE/TIMEOUT)");
                     return Mono.just(result);
+                });
+    }
+
+    public Mono<String> analyzeDiagnostics(String prompt) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            return Mono.just("Claude disabled — no API key set. Check ANTHROPIC_API_KEY env var.");
+        }
+
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("model", model);
+        request.put("max_tokens", 1024);
+        request.put("messages", List.of(message));
+
+        return webClient.post()
+                .uri("/v1/messages")
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .timeout(java.time.Duration.ofSeconds(30))
+                .map(response -> {
+                    try {
+                        List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.get("content");
+                        return (String) contentList.get(0).get("text");
+                    } catch (Exception e) {
+                        log.error("Diagnostics parse error", e);
+                        return "Parse error: " + e.getMessage();
+                    }
+                })
+                .onErrorResume(e -> {
+                    if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException wcre) {
+                        log.error("Claude diagnostics API error {} — body: {}", wcre.getStatusCode(), wcre.getResponseBodyAsString());
+                        return Mono.just("Claude API error: " + wcre.getStatusCode() + " — " + wcre.getResponseBodyAsString());
+                    }
+                    log.error("Claude diagnostics failed: {}", e.getMessage());
+                    return Mono.just("Claude unavailable: " + e.getMessage());
                 });
     }
 

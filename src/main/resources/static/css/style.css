@@ -435,6 +435,9 @@ td {
     opacity: 0.85;
 }
 
+/* Simulation-only events (not real signals) */
+.sim-event { opacity: 0.35; }
+
 /* Kill switch active state */
 #node-kill.kill-active {
     border-color: var(--loss-red) !important;

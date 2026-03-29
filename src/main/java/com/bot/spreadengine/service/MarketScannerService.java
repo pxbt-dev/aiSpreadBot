@@ -115,6 +115,11 @@ public class MarketScannerService {
         return activeMarkets.size() < 2 ? getPrimaryTokenId() : activeMarkets.get(1).tokenId();
     }
 
+    /** Full market record for the secondary slot (includes question/ticker). */
+    public ScannedMarket getSecondaryMarket() {
+        return activeMarkets.size() < 2 ? (activeMarkets.isEmpty() ? null : activeMarkets.get(0)) : activeMarkets.get(1);
+    }
+
     public List<ScannedMarket> getActiveMarkets() {
         return new ArrayList<>(activeMarkets);
     }

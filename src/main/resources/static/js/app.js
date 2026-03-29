@@ -94,7 +94,9 @@ function handleStats(stats) {
     setVal('hdr-fill', stats.fillRate + '%');
     setVal('hdr-dps', '$' + stats.dps);
     setVal('hdr-dph', '$' + Math.floor(stats.dph));
-    setVal('hdr-winrate', (95.0 + Math.random() * 2).toFixed(1) + '%');
+    setVal('hdr-uptime', stats.uptime || '00:00:00');
+    setVal('hdr-trades', stats.trades);
+    setVal('hdr-vpin', stats.vpin);
     setVal('val-vpin', stats.vpin);
 
     const confPct = stats.aiConfidence != null ? Math.round(stats.aiConfidence * 100) : null;
@@ -113,11 +115,11 @@ function handleStats(stats) {
     updateSkippedBadge(stats.skippedMarkets || 0);
 
     setVal('val-ollama', stats.claudeModel ? stats.claudeModel + ': SYNCED' : 'READY');
-    setVal('val-sentiment', stats.sentiment);
+    setVal('val-sentiment', stats.sentiment != null ? Number(stats.sentiment).toFixed(2) : '--');
     setVal('val-bot-trades', stats.trades);
     setVal('ftr-trades', stats.trades);
     setVal('ftr-fill', '$' + Number(stats.totalVolume).toLocaleString());
-    setVal('val-spreads', '$' + (0.05 + (Math.random() * 0.01)).toFixed(3));
+    setVal('val-spreads', '$' + Number(stats.spread || 0).toFixed(3));
     const formatPnL = (val) => {
         const v = Number(val);
         return (v >= 0 ? '+' : '-') + '$' + Math.abs(v).toFixed(2);
@@ -263,6 +265,8 @@ function addLogEntry(event) {
     let msgClass = '';
     if (event.type === 'SPREAD' || event.type === 'MEAN_REVERT' || event.type === 'WEATHER_ARB' || event.type === 'TRADE' || event.type === 'TEST_FILL' || event.type === 'AUDIT_PASS' || event.type === 'TAKE_PROFIT') {
         msgClass = 'green';
+    } else if (event.type === 'SIM_WEATHER_ARB') {
+        msgClass = 'sim-event'; // grey — simulation noise, not a real trade signal
     } else if (event.type === 'SOLAR_UPDATE') {
         msgClass = 'blue';
     } else if (event.type === 'AUDIT_VETO' || event.type === 'STOP_LOSS') {
