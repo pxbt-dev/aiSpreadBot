@@ -116,12 +116,19 @@ public class LiveTradingEngine {
     public void executeWeatherArb() {
         String tokenId = marketScanner.getSecondaryTokenId();
         if (tokenId == null) return;
-        weatherService.getPrecipitationProbability()
+        // Fetch full NOAA conditions (precip, tempC, humidity) alongside the market mid
+        weatherService.getCurrentConditions()
             .zipWith(polymarketService.getMidpoint(tokenId).onErrorResume(e -> Mono.empty()))
             .subscribe(tuple -> {
-                double noaaProb = tuple.getT1();
+                double[] noaa   = tuple.getT1();
+                double noaaProb = noaa[0];
+                double tempC    = noaa[1];
+                double humidity = noaa[2];
                 double marketProb = tuple.getT2();
                 double gap = Math.abs(noaaProb - marketProb);
+
+                log.info("🌡️ NOAA conditions — precip={:.2f} temp={:.1f}°C humidity={:.2f}",
+                    noaaProb, tempC, humidity);
 
                 // Gap-reversal exit: if the arb has closed, exit any open position
                 PositionService.Position openPos = positionService.getPositionMap().get(tokenId);
@@ -139,8 +146,9 @@ public class LiveTradingEngine {
                     return;
                 }
 
-                // AI ENSEMBLE CONSENSUS
-                double[] features = new double[]{noaaProb, 0.2, 0.4, solarMultiplier};
+                // AI ENSEMBLE CONSENSUS — real NOAA features instead of hardcoded placeholders
+                double normalizedTemp = Math.max(0.0, Math.min(1.0, (tempC + 20.0) / 60.0));
+                double[] features = new double[]{noaaProb, normalizedTemp, humidity, solarMultiplier};
 
                 sentimentService.getSentimentScore("NYC Rain Probability")
                     .subscribe(sentiment -> {
@@ -214,7 +222,17 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 5000)
     public void broadcastAiInsights() {
-        double[] features = new double[]{0.5, 0.2, 0.4, solarMultiplier};
+        weatherService.getCurrentConditions().subscribe(noaa -> {
+            double normalizedTemp = Math.max(0.0, Math.min(1.0, (noaa[1] + 20.0) / 60.0));
+            double[] features = new double[]{noaa[0], normalizedTemp, noaa[2], solarMultiplier};
+            runAiInsightsBroadcast(features);
+        }, err -> {
+            // Fall back to neutral features if NOAA is unavailable
+            runAiInsightsBroadcast(new double[]{0.5, 0.5, 0.5, solarMultiplier});
+        });
+    }
+
+    private void runAiInsightsBroadcast(double[] features) {
         double consensus = wekaService.getConsensusScore("Weather", features);
         
         sentimentService.getSentimentScore("Market General")

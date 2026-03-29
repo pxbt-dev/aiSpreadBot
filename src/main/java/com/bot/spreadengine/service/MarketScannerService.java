@@ -23,7 +23,13 @@ public class MarketScannerService {
         this.polymarketService = polymarketService;
     }
 
-    public record ScannedMarket(String tokenId, String question, double mid, double score) {}
+    public record ScannedMarket(String tokenId, String question, double mid, double score, boolean isWeather) {}
+
+    // Keywords that identify weather / precipitation markets
+    private static final List<String> WEATHER_KEYWORDS = List.of(
+        "rain", "precip", "snow", "storm", "hurricane", "flood",
+        "temperature", "weather", "celsius", "fahrenheit", "drought"
+    );
 
     @PostConstruct
     public void init() {
@@ -48,16 +54,19 @@ public class MarketScannerService {
                 String tokenId = (String) tokens.get(0).get("token_id");
                 if (tokenId == null) return Mono.empty();
 
+                boolean isWeather = isWeatherMarket(question);
+
                 return polymarketService.getMidpoint(tokenId)
                     .map(mid -> {
                         // Score: liquidity × how close mid is to 0.5 (0.5 = max uncertainty = best spread)
+                        // Weather markets get a 2× bonus so they always win the secondary slot
                         double proximity = 1.0 - Math.abs(mid - 0.5) * 2.0;
-                        double score = liquidity * proximity;
-                        return new ScannedMarket(tokenId, question, mid, score);
+                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
+                        return new ScannedMarket(tokenId, question, mid, score, isWeather);
                     });
             })
             .sort((a, b) -> Double.compare(b.score(), a.score()))
-            .take(2)
+            .take(10) // Wider net so we can split primary/secondary properly
             .collectList()
             .subscribe(markets -> {
                 if (markets.isEmpty()) {
@@ -65,19 +74,43 @@ public class MarketScannerService {
                     return;
                 }
                 activeMarkets.clear();
-                activeMarkets.addAll(markets);
-                log.info("✅ Scanner selected {} markets:", markets.size());
-                markets.forEach(m -> log.info("  → [score={:.2f}, mid={}] {}  token={}",
-                        m.score(), m.mid(), m.question(), m.tokenId()));
+
+                // Primary: best non-weather market for market-making
+                // Secondary: best weather market for arb; fall back to second-best overall
+                ScannedMarket primary = markets.stream()
+                    .filter(m -> !m.isWeather())
+                    .findFirst()
+                    .orElse(markets.get(0));
+
+                ScannedMarket secondary = markets.stream()
+                    .filter(m -> m.isWeather() && !m.tokenId().equals(primary.tokenId()))
+                    .findFirst()
+                    .orElse(markets.stream()
+                        .filter(m -> !m.tokenId().equals(primary.tokenId()))
+                        .findFirst()
+                        .orElse(primary));
+
+                activeMarkets.add(primary);
+                if (!secondary.tokenId().equals(primary.tokenId())) activeMarkets.add(secondary);
+
+                log.info("✅ Scanner selected {} markets:", activeMarkets.size());
+                activeMarkets.forEach(m -> log.info("  → [score={:.2f}, mid={}, weather={}] {}  token={}",
+                        m.score(), m.mid(), m.isWeather(), m.question(), m.tokenId()));
             }, e -> log.error("Market scan failed: {}", e.getMessage()));
     }
 
-    /** Best market for market-making (most liquid, closest to 0.5) */
+    private boolean isWeatherMarket(String question) {
+        if (question == null) return false;
+        String q = question.toLowerCase();
+        return WEATHER_KEYWORDS.stream().anyMatch(q::contains);
+    }
+
+    /** Best non-weather market for market-making (most liquid, closest to 0.5) */
     public String getPrimaryTokenId() {
         return activeMarkets.isEmpty() ? null : activeMarkets.get(0).tokenId();
     }
 
-    /** Second-best market */
+    /** Best weather market for arb; falls back to second-best overall if none found */
     public String getSecondaryTokenId() {
         return activeMarkets.size() < 2 ? getPrimaryTokenId() : activeMarkets.get(1).tokenId();
     }
