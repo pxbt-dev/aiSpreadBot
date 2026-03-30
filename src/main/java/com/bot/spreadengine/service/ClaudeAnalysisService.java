@@ -163,5 +163,68 @@ public class ClaudeAnalysisService {
                 });
     }
 
+    /**
+     * Asks Claude whether a Polymarket market title describes a measurable meteorological outcome
+     * (precipitation, temperature extremes, named storms, etc.) rather than politics, sports, or finance.
+     * Returns true if the market is suitable for weather arb; false otherwise.
+     * Falls back to true (permissive) if Claude is unavailable, so keyword pre-filtering still applies.
+     */
+    public Mono<Boolean> isWeatherMarket(String marketTitle) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            return Mono.just(true); // no key — rely on keyword filter only
+        }
+
+        String prompt = String.format(
+            "You are classifying Polymarket prediction market titles.\n\n" +
+            "Respond ONLY with valid JSON: {\"is_weather\": boolean}\n\n" +
+            "Rules:\n" +
+            "- true  → the market asks about a specific, measurable meteorological event " +
+            "(precipitation amount, temperature threshold, named storm landfall, snowfall, drought, etc.)\n" +
+            "- false → the market is about politics, elections, sports, economics, crypto, or any non-meteorological topic\n\n" +
+            "Market title: \"%s\"",
+            marketTitle.replace("\"", "'")
+        );
+
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("model", model);
+        request.put("max_tokens", 64);
+        request.put("messages", List.of(message));
+
+        return webClient.post()
+                .uri("/v1/messages")
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .timeout(java.time.Duration.ofSeconds(5))
+                .map(response -> {
+                    try {
+                        List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.get("content");
+                        String text = (String) contentList.get(0).get("text");
+                        int start = text.indexOf("{");
+                        int end = text.lastIndexOf("}");
+                        if (start == -1 || end == -1) return true;
+                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                        com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(text.substring(start, end + 1));
+                        boolean result = root.path("is_weather").asBoolean(true);
+                        log.info("🌦️ Claude market validation [{}]: \"{}\"", result ? "WEATHER" : "NOT-WEATHER", marketTitle);
+                        return result;
+                    } catch (Exception e) {
+                        log.warn("Claude market validation parse error — allowing market: {}", e.getMessage());
+                        return true;
+                    }
+                })
+                .onErrorResume(e -> {
+                    log.warn("Claude market validation unavailable — allowing market: {}", e.getMessage());
+                    return Mono.just(true);
+                });
+    }
+
     public String getModelName() { return model; }
 }

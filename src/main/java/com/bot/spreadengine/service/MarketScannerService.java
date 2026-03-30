@@ -17,10 +17,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class MarketScannerService {
 
     private final PolymarketService polymarketService;
+    private final ClaudeAnalysisService claudeAnalysisService;
     private final CopyOnWriteArrayList<ScannedMarket> activeMarkets = new CopyOnWriteArrayList<>();
 
-    public MarketScannerService(PolymarketService polymarketService) {
+    public MarketScannerService(PolymarketService polymarketService, ClaudeAnalysisService claudeAnalysisService) {
         this.polymarketService = polymarketService;
+        this.claudeAnalysisService = claudeAnalysisService;
     }
 
     public record ScannedMarket(String tokenId, String question, double mid, double score, boolean isWeather) {}
@@ -63,16 +65,23 @@ public class MarketScannerService {
                 String tokenId = (String) tokens.get(0).get("token_id");
                 if (tokenId == null) return Mono.empty();
 
-                boolean isWeather = isWeatherMarket(question);
+                boolean keywordMatch = isWeatherMarket(question);
 
-                return polymarketService.getMidpoint(tokenId)
-                    .map(mid -> {
-                        // Score: liquidity × how close mid is to 0.5 (0.5 = max uncertainty = best spread)
-                        // Weather markets get a 2× bonus so they always win the secondary slot
-                        double proximity = 1.0 - Math.abs(mid - 0.5) * 2.0;
-                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
-                        return new ScannedMarket(tokenId, question, mid, score, isWeather);
-                    });
+                // For keyword matches, ask Claude to confirm it's a genuine meteorological market.
+                // Non-keyword markets skip Claude (they're never treated as weather anyway).
+                Mono<Boolean> weatherCheck = keywordMatch
+                    ? claudeAnalysisService.isWeatherMarket(question)
+                    : Mono.just(false);
+
+                return weatherCheck.flatMap(isWeather ->
+                    polymarketService.getMidpoint(tokenId)
+                        .map(mid -> {
+                            // Score: liquidity × how close mid is to 0.5 (0.5 = max uncertainty = best spread)
+                            // Validated weather markets get a 2× bonus so they always win the secondary slot
+                            double proximity = 1.0 - Math.abs(mid - 0.5) * 2.0;
+                            double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
+                            return new ScannedMarket(tokenId, question, mid, score, isWeather);
+                        }));
             })
             .sort((a, b) -> Double.compare(b.score(), a.score()))
             .take(10) // Wider net so we can split primary/secondary properly
@@ -130,14 +139,21 @@ public class MarketScannerService {
         return activeMarkets.isEmpty() ? null : activeMarkets.get(0).tokenId();
     }
 
-    /** Best weather market for arb; falls back to second-best overall if none found */
+    /** Best weather market for arb; returns null if no weather market was found (no fallback to non-weather). */
     public String getSecondaryTokenId() {
-        return activeMarkets.size() < 2 ? getPrimaryTokenId() : activeMarkets.get(1).tokenId();
+        return activeMarkets.stream()
+            .filter(ScannedMarket::isWeather)
+            .map(ScannedMarket::tokenId)
+            .findFirst()
+            .orElse(null);
     }
 
-    /** Full market record for the secondary slot (includes question/ticker). */
+    /** Full market record for the secondary slot; returns null if no validated weather market exists. */
     public ScannedMarket getSecondaryMarket() {
-        return activeMarkets.size() < 2 ? (activeMarkets.isEmpty() ? null : activeMarkets.get(0)) : activeMarkets.get(1);
+        return activeMarkets.stream()
+            .filter(ScannedMarket::isWeather)
+            .findFirst()
+            .orElse(null);
     }
 
     public List<ScannedMarket> getActiveMarkets() {

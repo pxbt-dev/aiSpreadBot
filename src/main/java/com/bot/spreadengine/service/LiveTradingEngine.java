@@ -170,7 +170,13 @@ public class LiveTradingEngine {
                     double sentiment = 0.5; // kept for Claude audit call signature only
 
                         if (gap >= 0.16 && !isSpring && finalConfidence > 0.6) {
-                            double kellySize = (positionService.getBankroll() * 0.1) * finalConfidence;
+                            // Cap per-trade size: Kelly formula, but never more than 15% of bankroll
+                            // and never more than $2.00 absolute — prevents ruin on small bankroll
+                            double bankroll = positionService.getBankroll();
+                            double kellySize = Math.min(
+                                (bankroll * 0.1) * finalConfidence,
+                                Math.min(bankroll * 0.15, 2.00)
+                            );
                             double tradePrice = tuple.getT2();
                             int qty = tradePrice > 0 ? (int)(kellySize / tradePrice) : 0;
 
