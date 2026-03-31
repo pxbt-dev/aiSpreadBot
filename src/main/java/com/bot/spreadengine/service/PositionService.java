@@ -63,24 +63,25 @@ public class PositionService {
         // Handle Bankroll and Realized Profit
         double tradeValue = qty * fillPrice;
         totalVolume += tradeValue;
+        boolean wasShort = "SELL".equalsIgnoreCase(pos.getSide());
         if (isBuy) {
             bankroll -= tradeValue;
             // Realized profit logic (if we were short)
-            if (oldSize < 0) {
-                int closingQty = Math.min(qty, Math.abs(oldSize));
+            if (oldSize > 0 && wasShort) {
+                int closingQty = Math.min(qty, oldSize);
                 realizedTradePnL = closingQty * (oldEntry - fillPrice);
                 totalProfit += realizedTradePnL;
-                log.info("💰 REALIZED PROFIT (SHORT COVER): ${} on {}", 
+                log.info("💰 REALIZED PROFIT (SHORT COVER): ${} on {}",
                     String.format("%.4f", realizedTradePnL), ticker);
             }
         } else {
             bankroll += tradeValue;
             // Realized profit logic (if we were long)
-            if (oldSize > 0) {
+            if (oldSize > 0 && !wasShort) {
                 int closingQty = Math.min(qty, oldSize);
                 realizedTradePnL = closingQty * (fillPrice - oldEntry);
                 totalProfit += realizedTradePnL;
-                log.info("💰 REALIZED PROFIT: ${} on {} (Price: {}, Entry: {})", 
+                log.info("💰 REALIZED PROFIT: ${} on {} (Price: {}, Entry: {})",
                     String.format("%.4f", realizedTradePnL), ticker, fillPrice, oldEntry);
             }
         }
@@ -121,7 +122,11 @@ public class PositionService {
         Position pos = openPositions.get(tokenId);
         if (pos != null) {
             pos.setLastPrice(mid);
-            pos.setPnl((mid - pos.getEntryPrice()) * pos.getSize());
+            boolean isShort = "SELL".equalsIgnoreCase(pos.getSide());
+            double pnl = isShort
+                ? (pos.getEntryPrice() - mid) * pos.getSize()
+                : (mid - pos.getEntryPrice()) * pos.getSize();
+            pos.setPnl(pnl);
         }
     }
 
