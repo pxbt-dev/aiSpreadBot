@@ -315,7 +315,7 @@ public class SimulationEngine {
 
         Map<String, Object> stats = new HashMap<>();
         stats.put("profit", df2.format(positionService.getTotalProfit()));
-        stats.put("sessionPnL", df2.format(positionService.getTotalProfit()));
+        stats.put("sessionPnL", df2.format(positionService.getBankroll() - PositionService.INITIAL_BANKROLL));
         stats.put("bankroll", df2.format(positionService.getBankroll()));
         stats.put("totalVolume", df2.format(positionService.getTotalVolume()));
         stats.put("trades", positionService.getTotalTrades());
