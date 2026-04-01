@@ -303,6 +303,27 @@ public class SimulationEngine {
 
     private double lastProfit = 0.0;
 
+    /**
+     * Walk-Forward Efficiency = OOS win rate / IS win rate, computed over all closed trades.
+     * IS = first 70% of trade history; OOS = last 30%.
+     * Healthy range: 0.5–1.0. Below 0.4 → model is overfit, retrain needed.
+     */
+    private double computeWFE() {
+        List<PositionService.TradeRecord> history = positionService.getTradeHistory();
+        // Only evaluate trades that closed a position (realizedPnL != 0)
+        List<PositionService.TradeRecord> closed = history.stream()
+            .filter(t -> t.getRealizedPnL() != 0.0)
+            .collect(java.util.stream.Collectors.toList());
+        if (closed.size() < 10) return -1.0; // not enough data
+        int splitIdx = (int)(closed.size() * 0.70);
+        List<PositionService.TradeRecord> is = closed.subList(0, splitIdx);
+        List<PositionService.TradeRecord> oos = closed.subList(splitIdx, closed.size());
+        double isWinRate = is.stream().filter(t -> t.getRealizedPnL() > 0).count() / (double) is.size();
+        double oosWinRate = oos.stream().filter(t -> t.getRealizedPnL() > 0).count() / (double) oos.size();
+        if (isWinRate <= 0) return -1.0;
+        return oosWinRate / isWinRate;
+    }
+
     @Scheduled(fixedRate = 1000)
     public void sendStats() {
         double dps = positionService.getTotalProfit() - lastProfit;
@@ -344,6 +365,13 @@ public class SimulationEngine {
             log.info("📊 Stats Broadcast: {} active positions", positionService.getPositions().size());
         }
         stats.put("uptime", uptimeStr);
+        double wfe = computeWFE();
+        stats.put("wfe", wfe >= 0 ? df2.format(wfe) : "N/A");
+        if (wfe >= 0 && wfe < 0.4) {
+            log.warn("⚠️ WFE={} below 0.40 — model may be overfit, consider retraining", df2.format(wfe));
+            messagingTemplate.convertAndSend("/topic/events",
+                new SpreadEvent("WFE_ALERT", String.format("WFE=%.2f < 0.40 — RETRAIN RECOMMENDED", wfe), (int)(wfe * 100)));
+        }
         messagingTemplate.convertAndSend("/topic/stats", stats);
     }
 

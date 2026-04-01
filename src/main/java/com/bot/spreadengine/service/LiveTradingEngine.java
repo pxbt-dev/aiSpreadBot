@@ -111,6 +111,55 @@ public class LiveTradingEngine {
 
     // Gap threshold below which we consider the arb closed and exit any open position
     private static final double GAP_CLOSE_THRESHOLD = 0.05;
+    // Polymarket taker fee (2%) deducted from EV before entry decision
+    private static final double POLYMARKET_FEE = 0.02;
+
+    /**
+     * Favourite-longshot bias calibration: prediction markets systematically overprice
+     * high-probability outcomes and underprice longshots. Correcting for this gives a
+     * more accurate effective market price before computing edge.
+     */
+    private double calibrateMarketPrice(double rawMid) {
+        if (rawMid >= 0.85) return rawMid - 0.07;
+        if (rawMid >= 0.70) return rawMid - 0.03;
+        if (rawMid <= 0.10) return rawMid + 0.03;
+        if (rawMid <= 0.20) return rawMid + 0.015;
+        return rawMid;
+    }
+
+    /**
+     * EV = P_true × (1 / p_mkt) - 1, net of fee.
+     * Positive net EV is required for entry.
+     */
+    private double computeExpectedValue(double pTrue, double calibratedPMkt, double fee) {
+        if (calibratedPMkt <= 0) return -1.0;
+        return pTrue * (1.0 / calibratedPMkt) - 1.0 - fee;
+    }
+
+    /**
+     * Coefficient of Variation across independent probability signals.
+     * CV = σ / μ over [weka, noaa]. High CV means signals disagree — reduce or skip.
+     */
+    private double computeSignalCV(double weka, double noaa) {
+        double mean = (weka + noaa) / 2.0;
+        if (mean <= 0) return 1.0;
+        double variance = ((weka - mean) * (weka - mean) + (noaa - mean) * (noaa - mean)) / 2.0;
+        return Math.sqrt(variance) / mean;
+    }
+
+    /**
+     * Empirical Kelly: f* = (p×b − q) / b, then scaled by (1 − CV) and halved.
+     * b = (1 − p_mkt) / p_mkt (net odds). Hard-capped at 10% bankroll / $2 absolute.
+     */
+    private double computeEmpiricalKelly(double pTrue, double calibratedPMkt, double cv, double bankroll) {
+        if (calibratedPMkt <= 0 || calibratedPMkt >= 1.0) return 0.0;
+        double b = (1.0 - calibratedPMkt) / calibratedPMkt;
+        double q = 1.0 - pTrue;
+        double fStar = Math.max(0.0, (pTrue * b - q) / b);
+        double fEmp = fStar * (1.0 - cv);   // shrink when signals disagree
+        double halfKelly = fEmp * 0.5;       // half-Kelly as per formula reference
+        return Math.min(bankroll * halfKelly, Math.min(bankroll * 0.10, 2.00));
+    }
 
     @Scheduled(fixedRate = 5000)
     public void executeWeatherArb() {
@@ -131,8 +180,14 @@ public class LiveTradingEngine {
                 double marketProb = tuple.getT2();
                 double gap = Math.abs(noaaProb - marketProb);
 
-                log.info("🌡️ NOAA conditions — precip={:.2f} temp={:.1f}°C humidity={:.2f}",
-                    noaaProb, tempC, humidity);
+                // --- 1. Calibration: remove favourite-longshot bias from market price
+                double calibratedMarketProb = calibrateMarketPrice(marketProb);
+
+                // --- 2. Expected Value (net of Polymarket fee)
+                double netEV = computeExpectedValue(noaaProb, calibratedMarketProb, POLYMARKET_FEE);
+
+                log.info("🌡️ NOAA conditions — precip={:.2f} temp={:.1f}°C humidity={:.2f} | mkt={:.3f} calibrated={:.3f} netEV={:.3f}",
+                    noaaProb, tempC, humidity, marketProb, calibratedMarketProb, netEV);
 
                 // Gap-reversal exit: if the arb has closed, exit any open position
                 PositionService.Position openPos = positionService.getPositionMap().get(tokenId);
@@ -154,70 +209,77 @@ public class LiveTradingEngine {
                 double normalizedTemp = Math.max(0.0, Math.min(1.0, (tempC + 20.0) / 60.0));
                 double[] features = new double[]{noaaProb, normalizedTemp, humidity, solarMultiplier};
 
-                // Weather arb confidence = WEKA physics score (80%) + normalised gap edge (20%)
-                // Sentiment is NOT used here — weather outcomes are physics, not narrative
                 double consensus = wekaService.getConsensusScore("Weather", features);
-                // Gap bonus: scales from 0 at 16% gap up to 1.0 at 50%+ gap
+
+                // --- 3. Signal CV gate: skip if WEKA and NOAA disagree too much (CV > 0.3)
+                double signalCV = computeSignalCV(consensus, noaaProb);
+                if (signalCV > 0.3) {
+                    log.warn("⚠️ Signal CV={:.2f} > 0.30 — WEKA={:.2f} vs NOAA={:.2f} disagree, skipping",
+                        signalCV, consensus, noaaProb);
+                    return;
+                }
+
+                // Confidence (used for Claude audit gate threshold only)
                 double gapBonus = Math.min(1.0, Math.max(0.0, (gap - 0.16) / 0.34));
                 double finalConfidence = (consensus * 0.8) + (gapBonus * 0.2);
                 currentConfidence = finalConfidence;
 
                 boolean isSpring = wyckoffService.detectSpring(priceBuffers.getOrDefault(tokenId, new ArrayList<>()));
-                log.info("Weather Arb Brain: WEKA={}, Gap={:.1f}% (bonus={:.2f}) -> Confidence={}",
-                    String.format("%.2f", consensus), gap * 100, gapBonus, String.format("%.2f", finalConfidence));
+                log.info("Weather Arb Brain: WEKA={}, NOAA={:.2f}, CV={:.2f}, netEV={:.3f}, Confidence={}",
+                    String.format("%.2f", consensus), noaaProb, signalCV, netEV, String.format("%.2f", finalConfidence));
 
-                {   // scope block replaces the old sentiment subscribe
+                {   // scope block
                     double sentiment = 0.5; // kept for Claude audit call signature only
 
-                        if (gap >= 0.16 && !isSpring && finalConfidence > 0.6) {
-                            // Cap per-trade size: Kelly formula, but never more than 15% of bankroll
-                            // and never more than $2.00 absolute — prevents ruin on small bankroll
-                            double bankroll = positionService.getBankroll();
-                            double kellySize = Math.min(
-                                (bankroll * 0.1) * finalConfidence,
-                                Math.min(bankroll * 0.15, 2.00)
-                            );
-                            double tradePrice = tuple.getT2();
-                            int qty = tradePrice > 0 ? (int)(kellySize / tradePrice) : 0;
+                    // Entry gate: positive net EV (replaces raw gap >= 0.16) + confidence + no false breakdown
+                    if (netEV > 0.0 && !isSpring && finalConfidence > 0.6) {
+                        // --- 4. Empirical Kelly sizing: f* × (1 - CV) × 0.5 half-Kelly
+                        double bankroll = positionService.getBankroll();
+                        double kellySize = computeEmpiricalKelly(noaaProb, calibratedMarketProb, signalCV, bankroll);
+                        double tradePrice = tuple.getT2();
+                        int qty = tradePrice > 0 ? (int)(kellySize / tradePrice) : 0;
 
-                            // Position cap: don't pile into the same token beyond 25% of bankroll
-                            if (qty <= 0 || riskManagementService.isPositionCapReached(tokenId, kellySize)) {
-                                log.warn("⚠️ POSITION CAP reached for {} — skipping entry", tokenId);
-                                messagingTemplate.convertAndSend("/topic/events",
-                                    new SpreadEvent("SKIPPED", "POSITION CAP: max exposure reached", 0));
-                                return;
-                            }
+                        log.info("📐 Empirical Kelly: f*×(1-CV={:.2f})×0.5 → size=${:.3f} qty={}",
+                            signalCV, kellySize, qty);
 
-                            if (finalConfidence >= 0.85) {
-                                claudeAnalysisService.auditTrade(solarMultiplier, consensus, sentiment,
-                                                                 "BUY", kellySize, finalConfidence, gap,
-                                                                 noaaProb, marketProb)
-                                    .subscribe(auditResult -> {
-                                        boolean auditPass = (boolean) auditResult.get("auditPass");
-                                        currentAuditNote = (String) auditResult.get("note");
-
-                                        if (auditPass) {
-                                            log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}",
-                                                String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
-                                            messagingTemplate.convertAndSend("/topic/events",
-                                                new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
-                                            positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
-                                            messagingTemplate.convertAndSend("/topic/events",
-                                                new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
-                                        } else {
-                                            log.warn("🛑 CLAUDE VETO: {}", currentAuditNote);
-                                            messagingTemplate.convertAndSend("/topic/events",
-                                                new SpreadEvent("AUDIT_VETO", "CLAUDE VETO: " + currentAuditNote.replace("AI AUDITED: ", "").replace("AUDIT BLOCKED ", ""), 0));
-                                        }
-                                    }, error -> log.error("Error in auditTrade: {}", error.getMessage()));
-                            } else {
-                                log.info("🔥 ENSEMBLE APPROVED: Confidence={}, Sizing: ${}",
-                                    String.format("%.2f", finalConfidence), String.format("%.2f", kellySize));
-                                positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
-                                messagingTemplate.convertAndSend("/topic/events",
-                                    new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
-                            }
+                        // Position cap: don't pile into the same token beyond 25% of bankroll
+                        if (qty <= 0 || riskManagementService.isPositionCapReached(tokenId, kellySize)) {
+                            log.warn("⚠️ POSITION CAP reached for {} — skipping entry", tokenId);
+                            messagingTemplate.convertAndSend("/topic/events",
+                                new SpreadEvent("SKIPPED", "POSITION CAP: max exposure reached", 0));
+                            return;
                         }
+
+                        if (finalConfidence >= 0.85) {
+                            claudeAnalysisService.auditTrade(solarMultiplier, consensus, sentiment,
+                                                             "BUY", kellySize, finalConfidence, gap,
+                                                             noaaProb, marketProb)
+                                .subscribe(auditResult -> {
+                                    boolean auditPass = (boolean) auditResult.get("auditPass");
+                                    currentAuditNote = (String) auditResult.get("note");
+
+                                    if (auditPass) {
+                                        log.info("🔥 ENSEMBLE APPROVED: Confidence={}, netEV={:.3f}, Sizing: ${}",
+                                            String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
+                                        messagingTemplate.convertAndSend("/topic/events",
+                                            new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
+                                        positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
+                                        messagingTemplate.convertAndSend("/topic/events",
+                                            new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
+                                    } else {
+                                        log.warn("🛑 CLAUDE VETO: {}", currentAuditNote);
+                                        messagingTemplate.convertAndSend("/topic/events",
+                                            new SpreadEvent("AUDIT_VETO", "CLAUDE VETO: " + currentAuditNote.replace("AI AUDITED: ", "").replace("AUDIT BLOCKED ", ""), 0));
+                                    }
+                                }, error -> log.error("Error in auditTrade: {}", error.getMessage()));
+                        } else {
+                            log.info("🔥 ENSEMBLE APPROVED: Confidence={}, netEV={:.3f}, Sizing: ${}",
+                                String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
+                            positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
+                            messagingTemplate.convertAndSend("/topic/events",
+                                new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
+                        }
+                    }
                 }   // end scope block
             }, error -> log.error("Error in executeWeatherArb: {}", error.getMessage()));
     }

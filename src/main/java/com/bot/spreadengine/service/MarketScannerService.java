@@ -25,7 +25,13 @@ public class MarketScannerService {
         this.claudeAnalysisService = claudeAnalysisService;
     }
 
-    public record ScannedMarket(String tokenId, String question, double mid, double score, boolean isWeather) {}
+    /**
+     * arbSpread = 1.0 − (YES_mid + NO_mid).
+     * Positive: sum < 1 → can buy both sides for < $1, guaranteed $1 payout.
+     * Negative: sum > 1 → can sell both sides for > $1, guaranteed profit.
+     * Zero (|arbSpread| < 0.03): market is consistent, no guaranteed arb.
+     */
+    public record ScannedMarket(String tokenId, String question, double mid, double score, boolean isWeather, double arbSpread) {}
 
     // Keywords that identify weather / precipitation markets
     private static final List<String> WEATHER_KEYWORDS = List.of(
@@ -61,9 +67,10 @@ public class MarketScannerService {
                     return Mono.empty();
                 }
 
-                // Pick the YES token (first token)
+                // Pick the YES token (first token); NO token is second
                 String tokenId = (String) tokens.get(0).get("token_id");
                 if (tokenId == null) return Mono.empty();
+                String noTokenId = tokens.size() > 1 ? (String) tokens.get(1).get("token_id") : null;
 
                 boolean keywordMatch = isWeatherMarket(question);
 
@@ -73,15 +80,25 @@ public class MarketScannerService {
                     ? claudeAnalysisService.isWeatherMarket(question)
                     : Mono.just(false);
 
-                return weatherCheck.flatMap(isWeather ->
-                    polymarketService.getMidpoint(tokenId)
-                        .map(mid -> {
-                            // Score: liquidity × how close mid is to 0.5 (0.5 = max uncertainty = best spread)
-                            // Validated weather markets get a 2× bonus so they always win the secondary slot
-                            double proximity = 1.0 - Math.abs(mid - 0.5) * 2.0;
-                            double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
-                            return new ScannedMarket(tokenId, question, mid, score, isWeather);
-                        }));
+                return weatherCheck.flatMap(isWeather -> {
+                    Mono<Double> yesMidMono = polymarketService.getMidpoint(tokenId);
+                    // Fetch NO midpoint to check arbitrage invariant (YES + NO should ≈ 1.0)
+                    Mono<Double> noMidMono = noTokenId != null
+                        ? polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0)
+                        : Mono.just(0.0);
+                    return yesMidMono.zipWith(noMidMono, (yesMid, noMid) -> {
+                        double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
+                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
+                        // arbSpread > 0: buy both sides for < $1 (guaranteed profit)
+                        // arbSpread < 0: sell both sides for > $1 (guaranteed profit)
+                        double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
+                        if (Math.abs(arbSpread) > 0.03) {
+                            log.warn("⚖️ ARB INVARIANT: YES={:.3f} + NO={:.3f} = {:.3f} (spread={:+.3f}) — {}",
+                                yesMid, noMid, yesMid + noMid, arbSpread, question);
+                        }
+                        return new ScannedMarket(tokenId, question, yesMid, score, isWeather, arbSpread);
+                    });
+                });
             })
             .sort((a, b) -> Double.compare(b.score(), a.score()))
             .take(10) // Wider net so we can split primary/secondary properly
