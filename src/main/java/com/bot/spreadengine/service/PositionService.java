@@ -20,6 +20,8 @@ public class PositionService {
 
     private double bankroll = INITIAL_BANKROLL;
     private double totalProfit = 0.0;
+    private double grossWins = 0.0;
+    private double grossLosses = 0.0;
     private double totalVolume = 0.0;
     private int totalTrades = 0;
 
@@ -71,6 +73,8 @@ public class PositionService {
                 int closingQty = Math.min(qty, oldSize);
                 realizedTradePnL = closingQty * (oldEntry - fillPrice);
                 totalProfit += realizedTradePnL;
+                if (realizedTradePnL >= 0) grossWins += realizedTradePnL;
+                else grossLosses += realizedTradePnL;
                 log.info("💰 REALIZED PROFIT (SHORT COVER): ${} on {}",
                     String.format("%.4f", realizedTradePnL), ticker);
             }
@@ -81,6 +85,8 @@ public class PositionService {
                 int closingQty = Math.min(qty, oldSize);
                 realizedTradePnL = closingQty * (fillPrice - oldEntry);
                 totalProfit += realizedTradePnL;
+                if (realizedTradePnL >= 0) grossWins += realizedTradePnL;
+                else grossLosses += realizedTradePnL;
                 log.info("💰 REALIZED PROFIT: ${} on {} (Price: {}, Entry: {})",
                     String.format("%.4f", realizedTradePnL), ticker, fillPrice, oldEntry);
             }
@@ -101,14 +107,19 @@ public class PositionService {
             openPositions.remove(tokenId);
         } else {
             // Update Entry Price for the REMAINING or NEW position
-            if (oldSize == 0 || (oldSize > 0 && newSize > 0) || (oldSize < 0 && newSize < 0)) {
-                // Same side: Weighted average
+            int signedOldSize = wasShort ? -oldSize : oldSize;
+            boolean isAddingToPosition = (signedOldSize > 0 && isBuy) || (signedOldSize < 0 && !isBuy);
+            boolean isSideFlip = (signedOldSize > 0 && newSize < 0) || (signedOldSize < 0 && newSize > 0);
+
+            if (oldSize == 0 || isAddingToPosition) {
+                // New position or adding to existing: weighted average cost basis
                 double totalCost = Math.abs(oldSize * oldEntry) + tradeValue;
                 pos.setEntryPrice(totalCost / Math.abs(newSize));
-            } else {
-                // Side flip: Entry is the new trade price
+            } else if (isSideFlip) {
+                // Flipped sides: entry is the new trade price
                 pos.setEntryPrice(fillPrice);
             }
+            // else: reducing position — keep entry price unchanged
             
             pos.setSize(Math.abs(newSize));
             pos.setSide(newSize > 0 ? "BUY" : "SELL");
@@ -136,6 +147,8 @@ public class PositionService {
 
     public double getBankroll() { return bankroll; }
     public double getTotalProfit() { return totalProfit; }
+    public double getGrossWins() { return grossWins; }
+    public double getGrossLosses() { return grossLosses; }
     public double getTotalVolume() { return totalVolume; }
     public int getTotalTrades() { return totalTrades; }
     public java.util.List<TradeRecord> getTradeHistory() {
@@ -151,6 +164,8 @@ public class PositionService {
         openPositions.clear();
         tradeHistory.clear();
         this.totalProfit = 0.0;
+        this.grossWins = 0.0;
+        this.grossLosses = 0.0;
         this.totalVolume = 0.0;
         this.totalTrades = 0;
         this.bankroll = INITIAL_BANKROLL;
