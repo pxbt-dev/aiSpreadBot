@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
 @Slf4j
 public class RiskManagementService {
 
-    public static final double STOP_LOSS_PCT    = 0.25;   // -25% from entry
+    public static final double STOP_LOSS_PCT    = 0.08;   // -8% from entry (prediction tokens trade at ~$0.17; 25% was unreachably large)
     public static final double TAKE_PROFIT_PCT  = 0.30;   // +30% from entry
     public static final double MAX_POSITION_PCT = 0.25;   // max 25% of bankroll per token
 

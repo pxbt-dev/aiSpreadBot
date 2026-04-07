@@ -72,10 +72,30 @@ public class SimulationEngine {
         log.info("🚀 Simulation Engine Initialized with LIVE data stream.");
     }
 
+    @Autowired
+    private MarketScannerService marketScanner;
+
+    @Autowired
+    @org.springframework.context.annotation.Lazy
+    private GabagoolService gabagoolService;
+
     private void addGoldenTokens() {
-        log.info("ADDING REAL-WORLD TOKENS TO TRACKING POOL...");
-        trackedMarkets.add(Map.of("tokenId", "16040015440196279900485035793550429453516625694844857319147506590755961451627", "ticker", "2028 Election: Vance Yes", "title", "Presidential Election Winner 2028"));
-        trackedMarkets.add(Map.of("tokenId", "46368744070631387314868557200103674213564381440952153040375462649565213460036", "ticker", "NYC Rain: <2in Yes", "title", "Precipitation in NYC in March"));
+        // No hardcoded tokens — use whatever the MarketScannerService has discovered.
+        // This prevents the bot from being stuck on a single stale market.
+        List<MarketScannerService.ScannedMarket> scannerMarkets = marketScanner.getActiveMarkets();
+        if (!scannerMarkets.isEmpty()) {
+            for (MarketScannerService.ScannedMarket m : scannerMarkets) {
+                trackedMarkets.add(Map.of(
+                    "tokenId", m.tokenId(),
+                    "ticker",  m.question().length() > 40 ? m.question().substring(0, 37) + "..." : m.question(),
+                    "title",   m.question(),
+                    "minSize", "1"
+                ));
+            }
+            log.info("Seeded tracked markets from scanner: {} markets", scannerMarkets.size());
+        } else {
+            log.warn("Scanner has no active markets yet — tracked pool is empty, will retry on next refresh");
+        }
     }
     
     @Scheduled(fixedRate = 10000) // Every 10 seconds for small balances
@@ -90,7 +110,16 @@ public class SimulationEngine {
 
         polymarketService.getMidpoint(tokenId).subscribe(mid -> {
             if (mid <= 0) return;
-            boolean isBid = random.nextBoolean();
+            // Inventory-aware: if we hold a meaningful position, prefer the closing side.
+            // This prevents one-directional accumulation that bleeds money on small price drifts.
+            PositionService.Position existingPos = positionService.getPositionMap().get(tokenId);
+            boolean isBid;
+            if (existingPos != null && existingPos.getSize() > 2) {
+                boolean isLong = existingPos.getSide().equalsIgnoreCase("BUY");
+                isBid = !isLong; // long → prefer ASK (sell to flatten); short → prefer BID (buy to flatten)
+            } else {
+                isBid = random.nextBoolean();
+            }
             String minSizeStr = market.getOrDefault("minSize", "5");
             int minQty = Integer.parseInt(minSizeStr);
             int qty = liveMode ? minQty : 1 + random.nextInt(5); // Always use absolute minimum for live
@@ -284,11 +313,21 @@ public class SimulationEngine {
 
     @Scheduled(fixedRate = 12000)
     public void simulateWeatherArb() {
-        if (random.nextDouble() > 0.7) {
-            int gap = 10 + random.nextInt(15);
-            log.debug("SIM WEATHER ARB noise: gap +{}pt", gap);
-            // Use SIM_ prefix so UI can distinguish from real LiveTradingEngine arb events
-            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("SIM_WEATHER_ARB", String.format("[SIM] WEATHER gap +%dpt NOAA", gap), gap));
+        // Show real arb spread data from scanner when available; fall back to sim noise
+        List<MarketScannerService.ScannedMarket> scanned = marketScanner.getActiveMarkets();
+        MarketScannerService.ScannedMarket bestArb = scanned.stream()
+            .filter(m -> Math.abs(m.arbSpread()) > 0.02)
+            .max(java.util.Comparator.comparingDouble(m -> Math.abs(m.arbSpread())))
+            .orElse(null);
+
+        if (bestArb != null) {
+            int gapPts = (int)(Math.abs(bestArb.arbSpread()) * 100);
+            String label = String.format("ARB ENGINE: +%dpt — %s", gapPts,
+                bestArb.question().length() > 32 ? bestArb.question().substring(0, 29) + "..." : bestArb.question());
+            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("WEATHER_ARB", label, gapPts));
+        } else if (random.nextDouble() > 0.7) {
+            int gap = 8 + random.nextInt(10);
+            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("SIM_WEATHER_ARB", String.format("[SIM] ARB scan +%dpt", gap), gap));
         }
     }
     
@@ -363,6 +402,8 @@ public class SimulationEngine {
         stats.put("skippedMarkets", polymarketService.getSkippedMarketsCount());
         stats.put("positions", positionService.getPositions());
         stats.put("history", positionService.getTradeHistory());
+        // Gabagool arb pair summary
+        stats.put("arbPairs", gabagoolService.getActivePairsSummary());
         if (!positionService.getPositions().isEmpty()) {
             log.info("📊 Stats Broadcast: {} active positions", positionService.getPositions().size());
         }

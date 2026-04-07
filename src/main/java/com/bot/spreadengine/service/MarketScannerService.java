@@ -31,7 +31,7 @@ public class MarketScannerService {
      * Negative: sum > 1 → can sell both sides for > $1, guaranteed profit.
      * Zero (|arbSpread| < 0.03): market is consistent, no guaranteed arb.
      */
-    public record ScannedMarket(String tokenId, String question, double mid, double score, boolean isWeather, double arbSpread) {}
+    public record ScannedMarket(String tokenId, String noTokenId, String question, double mid, double noMid, double score, boolean isWeather, double arbSpread) {}
 
     // Keywords that identify weather / precipitation markets
     private static final List<String> WEATHER_KEYWORDS = List.of(
@@ -96,7 +96,7 @@ public class MarketScannerService {
                             log.warn("⚖️ ARB INVARIANT: YES={:.3f} + NO={:.3f} = {:.3f} (spread={:+.3f}) — {}",
                                 yesMid, noMid, yesMid + noMid, arbSpread, question);
                         }
-                        return new ScannedMarket(tokenId, question, yesMid, score, isWeather, arbSpread);
+                        return new ScannedMarket(tokenId, noTokenId, question, yesMid, noMid, score, isWeather, arbSpread);
                     });
                 });
             })

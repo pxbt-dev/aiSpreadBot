@@ -159,19 +159,27 @@ function handleStats(stats) {
     const invEl = document.getElementById('val-inventory');
     if (invEl) invEl.innerText = (inv > 0 ? '+' : '') + inv;
 
+    _latestTradeHistory = stats.history || [];
     renderPositions(stats.positions || []);
-    renderHistory(stats.history || []);
+    renderHistory(_latestTradeHistory);
+    if (stats.arbPairs) renderArbPairs(stats.arbPairs);
 }
 
 function switchTab(tab) {
-    const containers = ['container-open', 'container-history'];
-    const buttons = ['tab-open', 'tab-history'];
-    
-    containers.forEach(c => document.getElementById(c).style.display = 'none');
-    buttons.forEach(b => document.getElementById(b).classList.remove('active'));
-    
+    ['open', 'history', 'arb'].forEach(t => {
+        const c = document.getElementById('container-' + t);
+        const b = document.getElementById('tab-' + t);
+        if (c) c.style.display = 'none';
+        if (b) b.classList.remove('active');
+    });
+
     document.getElementById('container-' + tab).style.display = 'block';
     document.getElementById('tab-' + tab).classList.add('active');
+
+    // Show export buttons only on history tab
+    const isHistory = tab === 'history';
+    document.getElementById('btn-copy-trades')?.classList.toggle('visible', isHistory);
+    document.getElementById('btn-export-csv')?.classList.toggle('visible', isHistory);
 }
 
 function renderHistory(trades) {
@@ -206,6 +214,43 @@ function renderHistory(trades) {
     });
 }
 
+function renderArbPairs(arbData) {
+    const openCount = arbData.openCount || 0;
+    const locked    = arbData.totalLocked  || '0.0000';
+    const settled   = arbData.totalSettled || '0.0000';
+
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+    setVal('arb-open-count', openCount);
+    setVal('arb-locked',  '+$' + locked);
+    setVal('arb-settled', '+$' + settled);
+
+    const body = document.getElementById('arb-body');
+    if (!body) return;
+    body.innerHTML = '';
+
+    const pairs = arbData.pairs || [];
+    if (!pairs.length) {
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;opacity:0.3;padding:18px;font-size:9px;letter-spacing:1px;">NO ACTIVE ARB PAIRS — SCANNING SHORT-DURATION MARKETS</td></tr>';
+        return;
+    }
+
+    [...pairs].reverse().forEach(p => {
+        const tr = document.createElement('tr');
+        const status = p.resolved
+            ? `<span class="pnl-pos">SETTLED +$${p.settledProfit}</span>`
+            : `<span style="color:var(--teal)">OPEN</span>`;
+        tr.innerHTML = `
+            <td style="color:var(--text-dim);font-size:9px">${p.pairId}</td>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.question}</td>
+            <td class="pos-buy">$${p.yesCost}</td>
+            <td class="pos-buy">$${p.noCost}</td>
+            <td class="pnl-pos">+$${p.lockedProfit}</td>
+            <td>${status}</td>
+        `;
+        body.appendChild(tr);
+    });
+}
+
 function renderPositions(positions) {
     const body = document.getElementById('positions-body');
     if (!body) return;
@@ -235,26 +280,98 @@ function renderPositions(positions) {
     });
 }
 
+// Latest trade history snapshot — kept in sync via handleStats
+let _latestTradeHistory = [];
+
 function handleEvent(event) {
     addLogEntry(event);
     triggerNodePulse(event.type);
 
-    // Phase 3 Updates
     if (event.type === 'SOLAR_UPDATE') {
         const val = event.message.split(': ')[1];
-        document.getElementById('solar-multiplier').innerText = val + 'x';
+        if (val) document.getElementById('solar-multiplier').innerText = val + 'x';
     }
     if (event.type === 'TEST_FILL' && event.message.includes('Phase:')) {
-        const phase = event.message.split('Phase: ')[1].replace(']', '');
-        document.getElementById('market-phase').innerText = phase;
+        const phase = event.message.split('Phase: ')[1]?.replace(']', '');
+        if (phase) document.getElementById('market-phase').innerText = phase;
     }
     if (event.type === 'KILL_SWITCH') {
-        const killEl = document.getElementById('node-kill');
-        if (killEl) { killEl.classList.add('kill-active'); }
+        document.getElementById('node-kill')?.classList.add('kill-active');
     }
     if (event.type === 'STOP_LOSS' || event.type === 'TAKE_PROFIT') {
         triggerNodePulse('node-profit');
     }
+    // ARB ENGINE node: update gap display
+    if (event.type === 'WEATHER_ARB') {
+        const gapEl = document.getElementById('val-weather');
+        if (gapEl && event.data != null) gapEl.innerText = '+' + event.data + 'pt';
+        flashStratStatus('strat-status-structural', 'FIRED');
+    }
+    // Gabagool events
+    if (event.type === 'GABAGOOL_ENTRY') {
+        triggerNodePulse('WEATHER_ARB');
+        const gapEl = document.getElementById('val-weather');
+        if (gapEl && event.data != null) gapEl.innerText = '+' + event.data + 'pt';
+        flashStratStatus('strat-status-gabagool', 'ENTERED');
+    }
+    if (event.type === 'GABAGOOL_SETTLE') {
+        triggerNodePulse('SPREAD');
+        flashStratStatus('strat-status-gabagool', 'SETTLED');
+    }
+    if (event.type === 'TRADE' || event.type === 'AUDIT_PASS') {
+        flashStratStatus('strat-status-weather', 'FIRED');
+    }
+    if (event.type === 'TEST_FILL') {
+        flashStratStatus('strat-status-mm', 'FILLED');
+    }
+}
+
+function flashStratStatus(id, label) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prev = el.innerText;
+    const prevClass = el.className;
+    el.innerText = label;
+    el.className = 'strat-status fired';
+    setTimeout(() => {
+        el.innerText = prev;
+        el.className = prevClass;
+    }, 3000);
+}
+
+/* ─── Export helpers ──────────────────────────────────────────────────────── */
+
+function copyTrades() {
+    if (!_latestTradeHistory.length) { alert('No trades to copy.'); return; }
+    const header = 'TIME\tASSET\tSIDE\tQTY\tPRICE\tREALIZED P&L';
+    const rows = [..._latestTradeHistory].reverse().map(t => {
+        const time = new Date(t.timestamp).toLocaleTimeString();
+        const pnl  = (t.realizedPnL >= 0 ? '+' : '') + Number(t.realizedPnL).toFixed(4);
+        return [time, t.asset, t.side, t.qty, Number(t.price).toFixed(4), pnl].join('\t');
+    });
+    navigator.clipboard.writeText([header, ...rows].join('\n'))
+        .then(() => {
+            const btn = document.getElementById('btn-copy-trades');
+            if (btn) { btn.innerText = '✓ COPIED'; setTimeout(() => { btn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg> COPY'; }, 2000); }
+        })
+        .catch(() => alert('Clipboard unavailable — try EXPORT CSV instead.'));
+}
+
+function exportCSV() {
+    if (!_latestTradeHistory.length) { alert('No trades to export.'); return; }
+    const header = 'timestamp,asset,side,qty,price,realized_pnl';
+    const rows = [..._latestTradeHistory].reverse().map(t =>
+        [t.timestamp, `"${t.asset}"`, t.side, t.qty,
+         Number(t.price).toFixed(6), Number(t.realizedPnL).toFixed(6)].join(',')
+    );
+    const csv  = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `spread-engine-trades-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 function addLogEntry(event) {
@@ -267,7 +384,9 @@ function addLogEntry(event) {
     div.className = 'log-entry';
     
     let msgClass = '';
-    if (event.type === 'SPREAD' || event.type === 'MEAN_REVERT' || event.type === 'WEATHER_ARB' || event.type === 'TRADE' || event.type === 'TEST_FILL' || event.type === 'AUDIT_PASS' || event.type === 'TAKE_PROFIT') {
+    if (event.type === 'SPREAD' || event.type === 'MEAN_REVERT' || event.type === 'WEATHER_ARB'
+        || event.type === 'TRADE' || event.type === 'TEST_FILL' || event.type === 'AUDIT_PASS'
+        || event.type === 'TAKE_PROFIT' || event.type === 'GABAGOOL_ENTRY' || event.type === 'GABAGOOL_SETTLE') {
         msgClass = 'green';
     } else if (event.type === 'SIM_WEATHER_ARB') {
         msgClass = 'sim-event'; // grey — simulation noise, not a real trade signal

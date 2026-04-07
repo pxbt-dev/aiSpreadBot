@@ -109,6 +109,8 @@ public class LiveTradingEngine {
             }, error -> log.error("Error in executeMarketMaking: {}", error.getMessage()));
     }
 
+    // Minimum arbSpread to enter a pure structural arb (covers 2% Polymarket fee per leg)
+    private static final double PURE_ARB_THRESHOLD = 0.04;
     // Gap threshold below which we consider the arb closed and exit any open position
     private static final double GAP_CLOSE_THRESHOLD = 0.05;
     // Polymarket taker fee (2%) deducted from EV before entry decision
@@ -282,6 +284,54 @@ public class LiveTradingEngine {
                     }
                 }   // end scope block
             }, error -> log.error("Error in executeWeatherArb: {}", error.getMessage()));
+    }
+
+    /**
+     * Pure structural arbitrage: if YES + NO midpoints sum to < 1 - fees, buying both legs
+     * guarantees profit regardless of outcome (gabagool-style). No NOAA or WEKA required.
+     * Fires every 15 seconds across all scanned markets.
+     */
+    @Scheduled(fixedRate = 15000)
+    public void executePureArb() {
+        if (riskManagementService.isKillSwitchActive()) return;
+
+        for (MarketScannerService.ScannedMarket market : marketScanner.getActiveMarkets()) {
+            double arb = market.arbSpread();
+            if (arb <= PURE_ARB_THRESHOLD) continue; // only buy-both-legs arb for now (arb > 0)
+
+            String yesTokenId = market.tokenId();
+            String noTokenId  = market.noTokenId();
+            if (noTokenId == null || noTokenId.isEmpty()) continue;
+
+            String ticker = market.question().length() > 35
+                ? market.question().substring(0, 32) + "..."
+                : market.question();
+
+            double bankroll  = positionService.getBankroll();
+            double legSize   = Math.min(bankroll * 0.03, 1.50); // 3% of bankroll per leg, max $1.50
+            double yesMid    = market.mid();
+            double noMid     = market.noMid();
+
+            int yesQty = yesMid > 0 ? (int)(legSize / yesMid) : 0;
+            int noQty  = noMid  > 0 ? (int)(legSize / noMid)  : 0;
+
+            if (yesQty <= 0 || noQty <= 0) continue;
+            if (riskManagementService.isPositionCapReached(yesTokenId, legSize)) continue;
+
+            log.info("⚖️ PURE ARB: YES+NO={:.3f} spread={:+.3f} — {} | YES x{} @ ${:.3f}, NO x{} @ ${:.3f}",
+                yesMid + noMid, arb, ticker, yesQty, yesMid, noQty, noMid);
+
+            positionService.addTrade(yesTokenId, ticker + " YES", "BUY", yesQty, yesMid);
+            positionService.addTrade(noTokenId,  ticker + " NO",  "BUY", noQty,  noMid);
+
+            int gapPts = (int)(arb * 100);
+            messagingTemplate.convertAndSend("/topic/events",
+                new SpreadEvent("WEATHER_ARB",
+                    String.format("PURE ARB: +%dpt locked — %s", gapPts, ticker), gapPts));
+
+            // Only trade one arb opportunity per cycle to avoid over-sizing
+            break;
+        }
     }
 
     @lombok.Data
