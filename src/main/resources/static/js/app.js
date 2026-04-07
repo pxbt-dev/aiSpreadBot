@@ -132,6 +132,10 @@ function handleStats(stats) {
         profitEl.innerText = formatPnL(profit);
         profitEl.className = 'node-val ' + getPnLClass(profit);
     }
+    const winsEl = document.getElementById('val-gross-wins');
+    if (winsEl) winsEl.innerText = '+$' + Math.abs(Number(stats.grossWins || 0)).toFixed(2);
+    const lossesEl = document.getElementById('val-gross-losses');
+    if (lossesEl) lossesEl.innerText = '-$' + Math.abs(Number(stats.grossLosses || 0)).toFixed(2);
 
     const bankrollFormatted = '$' + Number(stats.bankroll).toLocaleString();
     setVal('val-bankroll', bankrollFormatted);
