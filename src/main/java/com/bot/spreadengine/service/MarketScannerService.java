@@ -55,22 +55,28 @@ public class MarketScannerService {
             .flatMapMany(markets -> Flux.fromIterable(markets))
             .flatMap(market -> {
                 String question = (String) market.getOrDefault("question", "Unknown");
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> tokens = (List<Map<String, Object>>) market.getOrDefault("tokens", List.of());
                 double liquidity = toDouble(market.getOrDefault("liquidity", 0));
 
+                // Gamma API v2: token IDs are in clobTokenIds (JSON string array)
+                // Fallback to legacy tokens[].token_id for backwards compat
+                String[] clobIds = parseClobTokenIds(market.getOrDefault("clobTokenIds", null));
+                if (clobIds[0].isEmpty()) {
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> tokens = (List<Map<String, Object>>) market.getOrDefault("tokens", List.of());
+                    if (tokens.size() >= 1) clobIds[0] = String.valueOf(tokens.get(0).getOrDefault("token_id", ""));
+                    if (tokens.size() >= 2) clobIds[1] = String.valueOf(tokens.get(1).getOrDefault("token_id", ""));
+                }
+
                 // Only consider binary markets (2 tokens) with meaningful liquidity
-                if (tokens.size() < 2 || liquidity < MIN_LIQUIDITY) {
+                if (clobIds[0].isEmpty() || liquidity < MIN_LIQUIDITY) {
                     if (isWeatherMarket(question) && liquidity > 0) {
                         log.debug("⚠️ Skipped low-liquidity weather market (${} liq): {}", liquidity, question);
                     }
                     return Mono.empty();
                 }
 
-                // Pick the YES token (first token); NO token is second
-                String tokenId = (String) tokens.get(0).get("token_id");
-                if (tokenId == null) return Mono.empty();
-                String noTokenId = tokens.size() > 1 ? (String) tokens.get(1).get("token_id") : null;
+                String tokenId = clobIds[0];
+                String noTokenId = clobIds[1].isEmpty() ? null : clobIds[1];
 
                 boolean keywordMatch = isWeatherMarket(question);
 
@@ -80,12 +86,23 @@ public class MarketScannerService {
                     ? claudeAnalysisService.isWeatherMarket(question)
                     : Mono.just(false);
 
+                // --- Extract prices from Gamma data (outcomePrices field) ---
+                // Gamma API returns outcomePrices as a JSON string array e.g. "[\"0.65\",\"0.35\"]"
+                // or as a List. Prefer this over CLOB /midpoint which may be unavailable post-V2.
+                double[] gammaPrices = parseOutcomePrices(market.getOrDefault("outcomePrices", null));
+                double gammaYesMid = gammaPrices[0];
+                double gammaNoMid  = gammaPrices[1];
+
                 return weatherCheck.flatMap(isWeather -> {
-                    Mono<Double> yesMidMono = polymarketService.getMidpoint(tokenId);
-                    // Fetch NO midpoint to check arbitrage invariant (YES + NO should ≈ 1.0)
-                    Mono<Double> noMidMono = noTokenId != null
-                        ? polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0)
-                        : Mono.just(0.0);
+                    // Use Gamma prices if available (non-zero); fall back to CLOB only if missing
+                    Mono<Double> yesMidMono = gammaYesMid > 0
+                        ? Mono.just(gammaYesMid)
+                        : polymarketService.getMidpoint(tokenId);
+                    Mono<Double> noMidMono = gammaNoMid > 0
+                        ? Mono.just(gammaNoMid)
+                        : (noTokenId != null
+                            ? polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0)
+                            : Mono.just(0.0));
                     return yesMidMono.zipWith(noMidMono, (yesMid, noMid) -> {
                         double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
                         double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
@@ -93,8 +110,9 @@ public class MarketScannerService {
                         // arbSpread < 0: sell both sides for > $1 (guaranteed profit)
                         double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
                         if (Math.abs(arbSpread) > 0.03) {
-                            log.warn("⚖️ ARB INVARIANT: YES={:.3f} + NO={:.3f} = {:.3f} (spread={:+.3f}) — {}",
-                                yesMid, noMid, yesMid + noMid, arbSpread, question);
+                            log.warn("⚖️ ARB INVARIANT: YES={} + NO={} = {} (spread={}) — {}",
+                                String.format("%.3f", yesMid), String.format("%.3f", noMid),
+                                String.format("%.3f", yesMid + noMid), String.format("%+.3f", arbSpread), question);
                         }
                         return new ScannedMarket(tokenId, noTokenId, question, yesMid, noMid, score, isWeather, arbSpread);
                     });
@@ -106,8 +124,8 @@ public class MarketScannerService {
             .subscribe(markets -> {
                 long weatherCount = markets.stream().filter(ScannedMarket::isWeather).count();
                 log.info("🔍 Scanner top-10 candidates: {} total, {} weather", markets.size(), weatherCount);
-                markets.forEach(m -> log.info("  candidate [weather={}, score={:.0f}, mid={:.3f}] {}",
-                    m.isWeather(), m.score(), m.mid(), m.question()));
+                markets.forEach(m -> log.info("  candidate [weather={}, score={}, mid={}] {}",
+                    m.isWeather(), String.format("%.0f", m.score()), String.format("%.3f", m.mid()), m.question()));
 
                 if (markets.isEmpty()) {
                     log.warn("⚠️ Scanner found no tradeable markets — keeping existing tokens");
@@ -136,8 +154,8 @@ public class MarketScannerService {
                 }
 
                 log.info("✅ Scanner selected {} markets:", activeMarkets.size());
-                activeMarkets.forEach(m -> log.info("  → [{}] mid={:.3f} — {}",
-                    m.isWeather() ? "WEATHER/ARB" : "PRIMARY/MM", m.mid(), m.question()));
+                activeMarkets.forEach(m -> log.info("  → [{}] mid={} — {}",
+                    m.isWeather() ? "WEATHER/ARB" : "PRIMARY/MM", String.format("%.3f", m.mid()), m.question()));
 
                 if (weatherCount == 0) {
                     log.warn("⚠️ No weather markets found in top 200 active markets — weather arb disabled until next scan");
@@ -181,5 +199,63 @@ public class MarketScannerService {
         if (val == null) return 0.0;
         try { return Double.parseDouble(val.toString()); }
         catch (NumberFormatException e) { return 0.0; }
+    }
+
+    /**
+     * Parses the Gamma API clobTokenIds field into [yesTokenId, noTokenId].
+     * Gamma v2 returns this as a JSON-encoded string array: "[\"123...\",\"456...\"]"
+     * Returns ["", ""] on parse failure so callers can fall back to legacy tokens field.
+     */
+    private String[] parseClobTokenIds(Object raw) {
+        if (raw == null) return new String[]{"", ""};
+        try {
+            String s = raw.toString().trim();
+            if (s.startsWith("[")) {
+                s = s.replaceAll("[\\[\\]\"\\s]", "");
+                String[] parts = s.split(",");
+                String yes = parts.length > 0 ? parts[0].trim() : "";
+                String no  = parts.length > 1 ? parts[1].trim() : "";
+                return new String[]{yes, no};
+            }
+        } catch (Exception e) {
+            log.warn("Failed to parse clobTokenIds from '{}': {}", raw, e.getMessage());
+        }
+        return new String[]{"", ""};
+    }
+
+    /**
+     * Parses the Gamma API outcomePrices field into [yesMid, noMid].
+     * Gamma returns this as a JSON-encoded string array: "[\"0.65\",\"0.35\"]"
+     * or as a java.util.List when already deserialized.
+     * Returns [0.0, 0.0] on any parse failure so callers fall back to CLOB.
+     */
+    @SuppressWarnings("unchecked")
+    private double[] parseOutcomePrices(Object raw) {
+        if (raw == null) return new double[]{0.0, 0.0};
+        try {
+            List<Object> prices;
+            if (raw instanceof List) {
+                prices = (List<Object>) raw;
+            } else {
+                // Strip JSON-encoded string: "[\"0.65\",\"0.35\"]"
+                String s = raw.toString().trim();
+                if (s.startsWith("[")) {
+                    s = s.replaceAll("[\\[\\]\"\\s]", "");
+                    String[] parts = s.split(",");
+                    double yes = parts.length > 0 ? Double.parseDouble(parts[0]) : 0.0;
+                    double no  = parts.length > 1 ? Double.parseDouble(parts[1]) : 0.0;
+                    log.debug("📊 Gamma outcomePrices (string): YES={} NO={}", yes, no);
+                    return new double[]{yes, no};
+                }
+                return new double[]{0.0, 0.0};
+            }
+            double yes = prices.size() > 0 ? toDouble(prices.get(0)) : 0.0;
+            double no  = prices.size() > 1 ? toDouble(prices.get(1)) : 0.0;
+            log.debug("📊 Gamma outcomePrices (list): YES={} NO={}", yes, no);
+            return new double[]{yes, no};
+        } catch (Exception e) {
+            log.warn("Failed to parse outcomePrices from '{}': {}", raw, e.getMessage());
+            return new double[]{0.0, 0.0};
+        }
     }
 }
