@@ -296,8 +296,8 @@ public class LiveTradingEngine {
         if (riskManagementService.isKillSwitchActive()) return;
 
         for (MarketScannerService.ScannedMarket market : marketScanner.getActiveMarkets()) {
-            double arb = market.arbSpread();
-            if (arb <= PURE_ARB_THRESHOLD) continue; // only buy-both-legs arb for now (arb > 0)
+            // Pre-filter using cached scan prices — avoids CLOB calls for obvious non-arbs
+            if (market.arbSpread() <= PURE_ARB_THRESHOLD) continue;
 
             String yesTokenId = market.tokenId();
             String noTokenId  = market.noTokenId();
@@ -307,29 +307,43 @@ public class LiveTradingEngine {
                 ? market.question().substring(0, 32) + "..."
                 : market.question();
 
-            double bankroll  = positionService.getBankroll();
-            double legSize   = Math.min(bankroll * 0.03, 1.50); // 3% of bankroll per leg, max $1.50
-            double yesMid    = market.mid();
-            double noMid     = market.noMid();
+            // Fetch live CLOB prices before committing — scan prices can be up to 1hr stale
+            polymarketService.getMidpoint(yesTokenId)
+                .zipWith(polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0))
+                .subscribe((prices) -> {
+                    double yesMid = prices.getT1();
+                    double noMid  = prices.getT2();
+                    double liveArb = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
 
-            int yesQty = yesMid > 0 ? (int)(legSize / yesMid) : 0;
-            int noQty  = noMid  > 0 ? (int)(legSize / noMid)  : 0;
+                    if (liveArb <= PURE_ARB_THRESHOLD) {
+                        log.info("⚖️ PURE ARB stale — live YES+NO={} (spread={}) no longer viable — {}",
+                            String.format("%.3f", yesMid + noMid), String.format("%+.3f", liveArb), ticker);
+                        return;
+                    }
 
-            if (yesQty <= 0 || noQty <= 0) continue;
-            if (riskManagementService.isPositionCapReached(yesTokenId, legSize)) continue;
+                    double bankroll = positionService.getBankroll();
+                    double legSize  = Math.min(bankroll * 0.03, 1.50);
 
-            log.info("⚖️ PURE ARB: YES+NO={:.3f} spread={:+.3f} — {} | YES x{} @ ${:.3f}, NO x{} @ ${:.3f}",
-                yesMid + noMid, arb, ticker, yesQty, yesMid, noQty, noMid);
+                    int yesQty = yesMid > 0 ? (int)(legSize / yesMid) : 0;
+                    int noQty  = noMid  > 0 ? (int)(legSize / noMid)  : 0;
 
-            positionService.addTrade(yesTokenId, ticker + " YES", "BUY", yesQty, yesMid);
-            positionService.addTrade(noTokenId,  ticker + " NO",  "BUY", noQty,  noMid);
+                    if (yesQty <= 0 || noQty <= 0) return;
+                    if (riskManagementService.isPositionCapReached(yesTokenId, legSize)) return;
 
-            int gapPts = (int)(arb * 100);
-            messagingTemplate.convertAndSend("/topic/events",
-                new SpreadEvent("WEATHER_ARB",
-                    String.format("PURE ARB: +%dpt locked — %s", gapPts, ticker), gapPts));
+                    log.info("⚖️ PURE ARB: live YES+NO={} spread={} — {} | YES x{} @ ${}, NO x{} @ ${}",
+                        String.format("%.3f", yesMid + noMid), String.format("%+.3f", liveArb),
+                        ticker, yesQty, String.format("%.3f", yesMid), noQty, String.format("%.3f", noMid));
 
-            // Only trade one arb opportunity per cycle to avoid over-sizing
+                    positionService.addTrade(yesTokenId, ticker + " YES", "BUY", yesQty, yesMid);
+                    positionService.addTrade(noTokenId,  ticker + " NO",  "BUY", noQty,  noMid);
+
+                    int gapPts = (int)(liveArb * 100);
+                    messagingTemplate.convertAndSend("/topic/events",
+                        new SpreadEvent("WEATHER_ARB",
+                            String.format("PURE ARB: +%dpt locked — %s", gapPts, ticker), gapPts));
+                }, error -> log.error("Error fetching live prices for pure arb {}: {}", ticker, error.getMessage()));
+
+            // Only evaluate one candidate per cycle — async, so break after subscribing
             break;
         }
     }
