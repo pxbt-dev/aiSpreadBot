@@ -100,90 +100,100 @@ public class SimulationEngine {
     
     @Scheduled(fixedRate = 10000) // Every 10 seconds for small balances
     public void emitTrade() {
-        // Pick a random tracked market safely
-        List<Map<String, String>> currentMarkets = new ArrayList<>(trackedMarkets);
-        if (currentMarkets.isEmpty()) return;
-        
-        Map<String, String> market = currentMarkets.get(random.nextInt(currentMarkets.size()));
-        String tokenId = market.get("tokenId");
-        String ticker = market.get("ticker");
+        // Prefer scanner markets — they have validated Gamma prices and active liquidity.
+        // Falling back to the raw CLOB pool causes most picks to fail getMidpoint (V2 CLOB
+        // returns 0 for inactive books), which produces near-zero trade throughput.
+        List<MarketScannerService.ScannedMarket> scannerMarkets = marketScanner.getActiveMarkets();
+        if (scannerMarkets.isEmpty()) {
+            // Scanner hasn't run yet — fall back to CLOB pool briefly
+            List<Map<String, String>> currentMarkets = new ArrayList<>(trackedMarkets);
+            if (currentMarkets.isEmpty()) return;
+            Map<String, String> m = currentMarkets.get(random.nextInt(currentMarkets.size()));
+            String fallbackId = m.get("tokenId");
+            polymarketService.getMidpoint(fallbackId).subscribe(mid -> {
+                if (mid <= 0) return;
+                executeTrade(fallbackId, m.get("ticker"), mid);
+                sendStats();
+            }, err -> trackedMarkets.removeIf(mk -> fallbackId.equals(mk.get("tokenId"))));
+            return;
+        }
 
-        polymarketService.getMidpoint(tokenId).subscribe(mid -> {
-            if (mid <= 0) return;
-            // Inventory-aware: if we hold a meaningful position, prefer the closing side.
-            // This prevents one-directional accumulation that bleeds money on small price drifts.
-            PositionService.Position existingPos = positionService.getPositionMap().get(tokenId);
-            boolean isBid;
-            if (existingPos != null && existingPos.getSize() > 2) {
-                boolean isLong = existingPos.getSide().equalsIgnoreCase("BUY");
-                isBid = !isLong; // long → prefer ASK (sell to flatten); short → prefer BID (buy to flatten)
-            } else {
-                isBid = random.nextBoolean();
-            }
-            String minSizeStr = market.getOrDefault("minSize", "5");
-            int minQty = Integer.parseInt(minSizeStr);
-            int qty = liveMode ? minQty : 1 + random.nextInt(5); // Always use absolute minimum for live
-            String side = isBid ? "BID" : "ASK";
-            double fillPrice = isBid ? mid - 0.001 : mid + 0.001;
+        MarketScannerService.ScannedMarket scanned = scannerMarkets.get(random.nextInt(scannerMarkets.size()));
+        String tokenId = scanned.tokenId();
+        String ticker  = scanned.question().length() > 40
+            ? scanned.question().substring(0, 37) + "..." : scanned.question();
 
-            // Calculate order cost in USDC
-            double orderCost = qty * fillPrice;
-            
-            // BALANCE PROTECTION: Ensure we have enough bankroll
-            if (orderCost > positionService.getBankroll()) {
-                log.warn("BALANCE PROTECTION: Insufficient funds for {} {} (Cost: ${}, Balance: ${})", side, ticker, df2.format(orderCost), df2.format(positionService.getBankroll()));
-                return;
-            }
-
-            if (liveMode && !dryRun) {
-                log.info("LIVE ORDER EXECUTION: {} {} @ ${} qty {}", side, ticker, df3.format(fillPrice), qty);
-                
-                // Construct order payload for Polymarket CLOB
-                Map<String, Object> orderPayload = new HashMap<>();
-                orderPayload.put("tokenId", tokenId);
-                orderPayload.put("price", df3.format(fillPrice));
-                orderPayload.put("size", String.valueOf(qty));
-                orderPayload.put("side", side.equals("BID") ? "BUY" : "SELL");
-                
-                // Sign the order
-                try {
-                    long usdcAmount = (long) (qty * fillPrice * 1e6);
-                    long tokenAmount = (long) (qty * 1e6);
-                    
-                    String mAmount = isBid ? String.valueOf(usdcAmount) : String.valueOf(tokenAmount);
-                    String tAmount = isBid ? String.valueOf(tokenAmount) : String.valueOf(usdcAmount);
-                    int sideInt = isBid ? 0 : 1;
-
-                    String signature = orderSigningService.signOrder(tokenId, mAmount, tAmount, sideInt, 0);
-                    orderPayload.put("makerAmount", mAmount);
-                    orderPayload.put("takerAmount", tAmount);
-                    orderPayload.put("side", sideInt);
-                    orderPayload.put("signature", signature);
-                    
-                    polymarketService.placeOrder(orderPayload).subscribe(res -> {
-                        log.info("LIVE ORDER PLACED: {}", res);
-                        // Track execution on dashboard immediately via PositionService
-                        positionService.addTrade(tokenId, ticker, side.equals("BID") ? "BUY" : "SELL", qty, fillPrice);
-                        sendStats();
-                    });
-                } catch (Exception e) {
-                    log.error("Failed to sign/place live order: {}", e.getMessage());
-                }
-            } else {
-                String prefix = dryRun ? "[TEST MODE] SIMULATED" : "PAPER";
-                log.info("{} FILL: {} {} @ ${} qty {}", prefix, side, ticker, df3.format(fillPrice), qty);
-                messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("TEST_FILL", 
-                    String.format("%s FILL: %s %s @ $%s qty %d", prefix, side, ticker, df3.format(fillPrice), qty), fillPrice));
-                
-                positionService.addTrade(tokenId, ticker, side, qty, fillPrice);
-            }
-            
+        // Use cached Gamma mid directly — avoids V2 CLOB unavailability entirely
+        double cachedMid = scanned.mid();
+        if (cachedMid > 0) {
+            executeTrade(tokenId, ticker, cachedMid);
             sendStats();
-        },
-        err -> {
-            log.warn("PRUNING INACTIVE CLOB TOKEN {}: {}", tokenId, err.getMessage());
-            trackedMarkets.removeIf(m -> tokenId.equals(m.get("tokenId")));
-        });
+            return;
+        }
+
+        // Gamma mid missing for this market — try CLOB as last resort
+        polymarketService.getMidpoint(tokenId).subscribe(
+            mid -> { if (mid > 0) { executeTrade(tokenId, ticker, mid); sendStats(); } },
+            err -> log.debug("CLOB mid unavailable for {}: {}", tokenId, err.getMessage())
+        );
+    }
+
+    /** Core trade execution — inventory-aware, balance-protected, live/dry-run aware. */
+    private void executeTrade(String tokenId, String ticker, double mid) {
+        // Inventory cap: never accumulate more than 1 net contract from spread-making.
+        PositionService.Position existingPos = positionService.getPositionMap().get(tokenId);
+        boolean isBid;
+        if (existingPos != null && existingPos.getSize() >= 1) {
+            boolean isLong = existingPos.getSide().equalsIgnoreCase("BUY");
+            isBid = !isLong; // long → post ASK to flatten; short → post BID to flatten
+        } else {
+            isBid = random.nextBoolean();
+        }
+
+        int qty = liveMode ? 1 : 1 + random.nextInt(5);
+        String side = isBid ? "BID" : "ASK";
+        double fillPrice = isBid ? mid - 0.001 : mid + 0.001;
+        double orderCost = qty * fillPrice;
+
+        if (orderCost > positionService.getBankroll()) {
+            log.warn("BALANCE PROTECTION: Insufficient funds for {} {} (Cost: ${}, Balance: ${})",
+                side, ticker, df2.format(orderCost), df2.format(positionService.getBankroll()));
+            return;
+        }
+
+        if (liveMode && !dryRun) {
+            log.info("LIVE ORDER EXECUTION: {} {} @ ${} qty {}", side, ticker, df3.format(fillPrice), qty);
+            Map<String, Object> orderPayload = new HashMap<>();
+            orderPayload.put("tokenId", tokenId);
+            orderPayload.put("price", df3.format(fillPrice));
+            orderPayload.put("size", String.valueOf(qty));
+            orderPayload.put("side", side.equals("BID") ? "BUY" : "SELL");
+            try {
+                long usdcAmount  = (long)(qty * fillPrice * 1e6);
+                long tokenAmount = (long)(qty * 1e6);
+                String mAmount = isBid ? String.valueOf(usdcAmount)  : String.valueOf(tokenAmount);
+                String tAmount = isBid ? String.valueOf(tokenAmount) : String.valueOf(usdcAmount);
+                int    sideInt = isBid ? 0 : 1;
+                String signature = orderSigningService.signOrder(tokenId, mAmount, tAmount, sideInt, 0);
+                orderPayload.put("makerAmount", mAmount);
+                orderPayload.put("takerAmount", tAmount);
+                orderPayload.put("side", sideInt);
+                orderPayload.put("signature", signature);
+                polymarketService.placeOrder(orderPayload).subscribe(res -> {
+                    log.info("LIVE ORDER PLACED: {}", res);
+                    positionService.addTrade(tokenId, ticker, side.equals("BID") ? "BUY" : "SELL", qty, fillPrice);
+                    sendStats();
+                });
+            } catch (Exception e) {
+                log.error("Failed to sign/place live order: {}", e.getMessage());
+            }
+        } else {
+            String prefix = dryRun ? "[TEST MODE] SIMULATED" : "PAPER";
+            log.info("{} FILL: {} {} @ ${} qty {}", prefix, side, ticker, df3.format(fillPrice), qty);
+            messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("TEST_FILL",
+                String.format("%s FILL: %s %s @ $%s qty %d", prefix, side, ticker, df3.format(fillPrice), qty), fillPrice));
+            positionService.addTrade(tokenId, ticker, side, qty, fillPrice);
+        }
     }
 
     @Scheduled(fixedRate = 300000) // Every 5 minutes
@@ -377,7 +387,10 @@ public class SimulationEngine {
         stats.put("profit", df2.format(positionService.getTotalProfit()));
         stats.put("grossWins", df2.format(positionService.getGrossWins()));
         stats.put("grossLosses", df2.format(positionService.getGrossLosses()));
-        stats.put("sessionPnL", df2.format(positionService.getBankroll() - PositionService.INITIAL_BANKROLL));
+        double unrealizedPnL = positionService.getPositions().stream()
+            .mapToDouble(PositionService.Position::getPnl)
+            .sum();
+        stats.put("sessionPnL", df2.format(positionService.getTotalProfit() + unrealizedPnL));
         stats.put("bankroll", df2.format(positionService.getBankroll()));
         stats.put("totalVolume", df2.format(positionService.getTotalVolume()));
         stats.put("trades", positionService.getTotalTrades());

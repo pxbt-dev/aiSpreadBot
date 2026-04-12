@@ -9,6 +9,7 @@ import reactor.core.publisher.Mono;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -21,6 +22,18 @@ public class ClaudeAnalysisService {
 
     @Value("${anthropic.model:claude-haiku-4-5-20251001}")
     private String model;
+
+    /**
+     * Permanent result cache — once a title is classified, never call Claude again.
+     * Weather market classifications are stable; titles don't change mid-session.
+     */
+    private final Map<String, Boolean> weatherCache = new ConcurrentHashMap<>();
+
+    /**
+     * In-flight deduplication — if two concurrent scan pages surface the same market
+     * simultaneously, only one HTTP call is made; both subscribers share the result.
+     */
+    private final Map<String, Mono<Boolean>> inflightValidations = new ConcurrentHashMap<>();
 
     public ClaudeAnalysisService(WebClient.Builder webClientBuilder) {
         this.webClient = webClientBuilder.baseUrl("https://api.anthropic.com").build();
@@ -174,56 +187,70 @@ public class ClaudeAnalysisService {
             return Mono.just(true); // no key — rely on keyword filter only
         }
 
-        String prompt = String.format(
-            "You are classifying Polymarket prediction market titles.\n\n" +
-            "Respond ONLY with valid JSON: {\"is_weather\": boolean}\n\n" +
-            "Rules:\n" +
-            "- true  → the market asks about a specific, measurable meteorological event " +
-            "(precipitation amount, temperature threshold, named storm landfall, snowfall, drought, etc.)\n" +
-            "- false → the market is about politics, elections, sports, economics, crypto, or any non-meteorological topic\n\n" +
-            "Market title: \"%s\"",
-            marketTitle.replace("\"", "'")
-        );
+        // Result cache: same title never calls Claude twice across scan cycles
+        Boolean cached = weatherCache.get(marketTitle);
+        if (cached != null) return Mono.just(cached);
 
-        Map<String, Object> message = new HashMap<>();
-        message.put("role", "user");
-        message.put("content", prompt);
+        // In-flight dedup: if a call for this exact title is already in progress,
+        // return the same Mono so both callers share the single HTTP request
+        return inflightValidations.computeIfAbsent(marketTitle, title -> {
+            String prompt = String.format(
+                "You are classifying Polymarket prediction market titles.\n\n" +
+                "Respond ONLY with valid JSON: {\"is_weather\": boolean}\n\n" +
+                "Rules:\n" +
+                "- true  → the market asks about a specific, measurable meteorological event " +
+                "(precipitation amount, temperature threshold, named storm landfall, snowfall, drought, etc.)\n" +
+                "- false → the market is about politics, elections, sports, economics, crypto, or any non-meteorological topic\n\n" +
+                "Market title: \"%s\"",
+                title.replace("\"", "'")
+            );
 
-        Map<String, Object> request = new HashMap<>();
-        request.put("model", model);
-        request.put("max_tokens", 64);
-        request.put("messages", List.of(message));
+            Map<String, Object> message = new HashMap<>();
+            message.put("role", "user");
+            message.put("content", prompt);
 
-        return webClient.post()
-                .uri("/v1/messages")
-                .header("x-api-key", apiKey)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .bodyValue(request)
-                .retrieve()
-                .bodyToMono(Map.class)
-                .timeout(java.time.Duration.ofSeconds(5))
-                .map(response -> {
-                    try {
-                        List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.get("content");
-                        String text = (String) contentList.get(0).get("text");
-                        int start = text.indexOf("{");
-                        int end = text.lastIndexOf("}");
-                        if (start == -1 || end == -1) return true;
-                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                        com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(text.substring(start, end + 1));
-                        boolean result = root.path("is_weather").asBoolean(true);
-                        log.info("🌦️ Claude market validation [{}]: \"{}\"", result ? "WEATHER" : "NOT-WEATHER", marketTitle);
-                        return result;
-                    } catch (Exception e) {
-                        log.warn("Claude market validation parse error — allowing market: {}", e.getMessage());
-                        return true;
-                    }
-                })
-                .onErrorResume(e -> {
-                    log.warn("Claude market validation unavailable — allowing market: {}", e.getMessage());
-                    return Mono.just(true);
-                });
+            Map<String, Object> request = new HashMap<>();
+            request.put("model", model);
+            request.put("max_tokens", 64);
+            request.put("messages", List.of(message));
+
+            return webClient.post()
+                    .uri("/v1/messages")
+                    .header("x-api-key", apiKey)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .timeout(java.time.Duration.ofSeconds(5))
+                    .map(response -> {
+                        try {
+                            List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.get("content");
+                            String text = (String) contentList.get(0).get("text");
+                            int start = text.indexOf("{");
+                            int end = text.lastIndexOf("}");
+                            if (start == -1 || end == -1) return true;
+                            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                            com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(text.substring(start, end + 1));
+                            boolean result = root.path("is_weather").asBoolean(true);
+                            log.info("🌦️ Claude market validation [{}]: \"{}\"", result ? "WEATHER" : "NOT-WEATHER", title);
+                            return result;
+                        } catch (Exception e) {
+                            log.warn("Claude market validation parse error — allowing market: {}", e.getMessage());
+                            return true;
+                        }
+                    })
+                    .onErrorResume(e -> {
+                        log.warn("Claude market validation unavailable — allowing market: {}", e.getMessage());
+                        return Mono.just(true);
+                    })
+                    .doOnSuccess(result -> {
+                        // Persist to result cache and remove from in-flight map
+                        weatherCache.put(title, result);
+                        inflightValidations.remove(title);
+                    })
+                    .cache(); // make the Mono replayable so all subscribers share the one result
+        });
     }
 
     public String getModelName() { return model; }

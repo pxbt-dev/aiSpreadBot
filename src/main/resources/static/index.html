@@ -148,6 +148,27 @@
                     <button id="tab-arb"     class="tab-btn"        onclick="switchTab('arb')">ARB PAIRS</button>
                 </div>
                 <div class="export-actions">
+                    <button class="export-btn always-visible" onclick="exportAll()" title="Download full CSV (positions + history + arb pairs)">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M8 2v8M5 7l3 3 3-3"/>
+                            <path d="M3 13h10"/>
+                        </svg>
+                        EXPORT ALL
+                    </button>
+                    <button class="export-btn" id="btn-copy-positions" onclick="copyPositions()" title="Copy positions to clipboard">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="5" y="5" width="9" height="9" rx="1.5"/>
+                            <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/>
+                        </svg>
+                        COPY
+                    </button>
+                    <button class="export-btn" id="btn-export-positions-csv" onclick="exportPositionsCSV()" title="Download positions CSV">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M8 2v8M5 7l3 3 3-3"/>
+                            <path d="M3 13h10"/>
+                        </svg>
+                        EXPORT CSV
+                    </button>
                     <button class="export-btn" id="btn-copy-trades" onclick="copyTrades()" title="Copy to clipboard">
                         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                             <rect x="5" y="5" width="9" height="9" rx="1.5"/>

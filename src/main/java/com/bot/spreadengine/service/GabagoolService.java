@@ -32,10 +32,14 @@ public class GabagoolService {
     // ─── Thresholds ────────────────────────────────────────────────────────────
     /** Per-leg price threshold — only buy a leg if it's priced below this. */
     public static final double LEG_THRESHOLD = 0.48;
-    /** Max combined cost to enter (leaves ≥ 3% profit after 2% Polymarket fee). */
-    public static final double MAX_COMBINED_COST = 0.97;
-    /** Min absolute profit required per pair (in $). */
-    public static final double MIN_PROFIT_MARGIN = 0.03;
+    /**
+     * Max combined cost to enter. Polymarket's 2% fee applies to the PAYOUT ($1),
+     * so the winning leg pays out $0.98, not $1.00. Profit = 0.98 - combined.
+     * At MAX_COMBINED_COST=0.965: profit = $0.98 - $0.965 = $0.015 (1.5% per contract).
+     */
+    public static final double MAX_COMBINED_COST = 0.965;
+    /** Min profit after the 2% payout fee. Uses corrected formula: 0.98 - combined. */
+    public static final double MIN_PROFIT_MARGIN = 0.01;
     /** Markets resolving within this many hours are prioritised. */
     private static final int SHORT_DURATION_HOURS = 4;
     /** Fraction of bankroll to risk per arb pair (gabagool uses small fixed sizes). */
@@ -150,7 +154,8 @@ public class GabagoolService {
             if (yesMid > LEG_THRESHOLD)                 return null; // YES leg not cheap enough
             if (noMid  > LEG_THRESHOLD)                 return null; // NO  leg not cheap enough
             double combined     = yesMid + noMid;
-            double lockedProfit = 1.0 - combined;
+            // Correct fee: Polymarket deducts 2% from the $1 payout → net payout = $0.98
+            double lockedProfit = 0.98 - combined;
             if (combined >= MAX_COMBINED_COST)           return null; // not enough margin
             if (lockedProfit < MIN_PROFIT_MARGIN)        return null; // too small after fees
 

@@ -8,29 +8,39 @@ import org.springframework.stereotype.Service;
 
 /**
  * Monitors open positions every 3 seconds and enforces:
- *  - Stop-loss:     exit if mark falls 25% below entry
- *  - Take-profit:   exit if mark rises 30% above entry
- *  - Position cap:  refuse new entries beyond 25% of bankroll per token
- *  - Kill switch:   halt all new trades if bankroll drops 40% from start
+ *  - Stop-loss:        exit if absolute dollar loss exceeds MAX_LOSS_PER_POSITION
+ *  - Take-profit:      exit if mark rises 30% above entry
+ *  - Pre-event exit:   exit LOW-REWARD markets (<$500/game) within 10 min of game start
+ *                      HIGH-REWARD markets (EPL, NBA, UFC…) are kept open for live rewards
+ *  - Position cap:     refuse new entries beyond 25% of bankroll per token
+ *  - Kill switch:      halt all new trades if bankroll drops 40% from start
  */
 @Service
 @Slf4j
 public class RiskManagementService {
 
-    public static final double STOP_LOSS_PCT    = 0.08;   // -8% from entry (prediction tokens trade at ~$0.17; 25% was unreachably large)
-    public static final double TAKE_PROFIT_PCT  = 0.30;   // +30% from entry
-    public static final double MAX_POSITION_PCT = 0.25;   // max 25% of bankroll per token
+    /** Max absolute dollar loss per position before stop-loss fires. */
+    public static final double MAX_LOSS_PER_POSITION = 0.20;
+    public static final double TAKE_PROFIT_PCT       = 0.30;  // +30% from entry
+    public static final double MAX_POSITION_PCT      = 0.25;  // max 25% of bankroll per token
+    /** Markets earning < this $/game are not worth the event-resolution risk — exit pre-game. */
+    private static final double LOW_REWARD_THRESHOLD = 500.0;
+    /** Exit low-reward markets this many minutes before game start. */
+    private static final long PRE_EVENT_EXIT_MINUTES = 10;
 
     private final PositionService positionService;
     private final PolymarketService polymarketService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final MarketScannerService marketScanner;
 
     public RiskManagementService(PositionService positionService,
                                  PolymarketService polymarketService,
-                                 SimpMessagingTemplate messagingTemplate) {
-        this.positionService = positionService;
+                                 SimpMessagingTemplate messagingTemplate,
+                                 MarketScannerService marketScanner) {
+        this.positionService  = positionService;
         this.polymarketService = polymarketService;
         this.messagingTemplate = messagingTemplate;
+        this.marketScanner    = marketScanner;
     }
 
     /** Scans all open positions for stop-loss / take-profit triggers. */
@@ -46,27 +56,57 @@ public class RiskManagementService {
             log.error("☠️ KILL SWITCH ACTIVE: bankroll ${} below threshold", positionService.getBankroll());
         }
 
+        java.time.Instant now = java.time.Instant.now();
+
         for (PositionService.Position pos : positionService.getPositions()) {
             double entryPrice = pos.getEntryPrice();
             if (entryPrice <= 0) continue;
 
-            polymarketService.getMidpoint(pos.getTokenId()).subscribe(mid -> {
+            String tokenId = pos.getTokenId();
+
+            // ── Pre-event exit: low-reward markets only ──────────────────────
+            // High-reward markets (EPL, NBA, UFC…) earn 2.5× more during live play —
+            // DO NOT exit those. Only exit markets not worth the event-resolution risk.
+            double rewardPerGame = marketScanner.getRewardPerGame(tokenId);
+            if (rewardPerGame < LOW_REWARD_THRESHOLD) {
+                java.time.Instant gameStart = marketScanner.getGameStartTime(tokenId);
+                if (gameStart != null) {
+                    long minutesUntilStart = java.time.Duration.between(now, gameStart).toMinutes();
+                    if (minutesUntilStart >= 0 && minutesUntilStart <= PRE_EVENT_EXIT_MINUTES) {
+                        log.warn("⏰ PRE-EVENT EXIT ({}$/game, {}min to start): {} x{}",
+                            (int) rewardPerGame, minutesUntilStart, pos.getTicker(), pos.getSize());
+                        polymarketService.getMidpoint(tokenId).subscribe(
+                            mid -> exitPosition(pos, mid > 0 ? mid : entryPrice, "STOP_LOSS"),
+                            err -> exitPosition(pos, entryPrice, "STOP_LOSS"));
+                        continue;
+                    }
+                }
+            }
+
+            // ── Stop-loss (absolute dollar) + take-profit ────────────────────
+            polymarketService.getMidpoint(tokenId).subscribe(mid -> {
                 if (mid <= 0) return;
 
                 boolean isBuy = pos.getSide().equalsIgnoreCase("BUY");
+                // Absolute loss = (entry − mark) × size  for longs; (mark − entry) × size for shorts
+                double absoluteLoss = isBuy
+                    ? (entryPrice - mid) * pos.getSize()
+                    : (mid - entryPrice) * pos.getSize();
                 double pnlPct = isBuy ? (mid - entryPrice) / entryPrice
-                                      : (entryPrice - mid) / entryPrice;
+                                      : (entryPrice - mid)  / entryPrice;
 
-                if (pnlPct <= -STOP_LOSS_PCT) {
-                    log.warn("🛑 STOP-LOSS: {} entry={} mark={} pnl={:.1f}%",
-                        pos.getTicker(), entryPrice, mid, pnlPct * 100);
+                if (absoluteLoss >= MAX_LOSS_PER_POSITION) {
+                    log.warn("🛑 STOP-LOSS: {} entry={} mark={} loss=${} (cap=${})",
+                        pos.getTicker(), entryPrice, mid,
+                        String.format("%.3f", absoluteLoss),
+                        String.format("%.2f", MAX_LOSS_PER_POSITION));
                     exitPosition(pos, mid, "STOP_LOSS");
                 } else if (pnlPct >= TAKE_PROFIT_PCT) {
-                    log.info("✅ TAKE-PROFIT: {} entry={} mark={} pnl={:.1f}%",
+                    log.info("✅ TAKE-PROFIT: {} entry={} mark={} pnl=+{:.1f}%",
                         pos.getTicker(), entryPrice, mid, pnlPct * 100);
                     exitPosition(pos, mid, "TAKE_PROFIT");
                 }
-            }, err -> log.debug("Risk check mid unavailable for {}: {}", pos.getTokenId(), err.getMessage()));
+            }, err -> log.debug("Risk check mid unavailable for {}: {}", tokenId, err.getMessage()));
         }
     }
 

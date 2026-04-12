@@ -160,7 +160,9 @@ function handleStats(stats) {
     if (invEl) invEl.innerText = (inv > 0 ? '+' : '') + inv;
 
     _latestTradeHistory = stats.history || [];
-    renderPositions(stats.positions || []);
+    _latestPositions = stats.positions || [];
+    _latestArbPairs = stats.arbPairs?.pairs || [];
+    renderPositions(_latestPositions);
     renderHistory(_latestTradeHistory);
     if (stats.arbPairs) renderArbPairs(stats.arbPairs);
 }
@@ -176,10 +178,13 @@ function switchTab(tab) {
     document.getElementById('container-' + tab).style.display = 'block';
     document.getElementById('tab-' + tab).classList.add('active');
 
-    // Show export buttons only on history tab
+    // Show export buttons contextually per tab
     const isHistory = tab === 'history';
+    const isOpen    = tab === 'open';
     document.getElementById('btn-copy-trades')?.classList.toggle('visible', isHistory);
     document.getElementById('btn-export-csv')?.classList.toggle('visible', isHistory);
+    document.getElementById('btn-copy-positions')?.classList.toggle('visible', isOpen);
+    document.getElementById('btn-export-positions-csv')?.classList.toggle('visible', isOpen);
 }
 
 function renderHistory(trades) {
@@ -199,16 +204,17 @@ function renderHistory(trades) {
         const time = new Date(t.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const pnl = t.realizedPnL || 0;
         const pnlClass = pnl > 0 ? 'pnl-pos' : (pnl < 0 ? 'pnl-neg' : '');
-        
+        const pnlDisplay = pnl === 0
+            ? '<span style="opacity:0.25;font-size:10px;letter-spacing:1px;">—</span>'
+            : `${pnl > 0 ? '+$' : '-$'}${Math.abs(pnl).toFixed(4)}`;
+
         row.innerHTML = `
             <td style="color: var(--accent-cyan); font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono';">${time}</td>
             <td style="font-weight: 700;">${t.asset}</td>
             <td class="${t.side === 'BUY' ? 'pos-buy' : 'pos-sell'}">${t.side}</td>
             <td>${t.qty}</td>
             <td style="font-family: 'JetBrains Mono';">$${Number(t.price).toFixed(3)}</td>
-            <td class="${pnlClass}" style="font-family: 'JetBrains Mono';">
-                ${(pnl >= 0 ? '+' : '-')}$${Math.abs(pnl).toFixed(2)}
-            </td>
+            <td class="${pnlClass}" style="font-family: 'JetBrains Mono';">${pnlDisplay}</td>
         `;
         body.appendChild(row);
     });
@@ -280,8 +286,10 @@ function renderPositions(positions) {
     });
 }
 
-// Latest trade history snapshot — kept in sync via handleStats
+// Latest snapshots — kept in sync via handleStats
 let _latestTradeHistory = [];
+let _latestPositions = [];
+let _latestArbPairs = [];
 
 function handleEvent(event) {
     addLogEntry(event);
@@ -370,6 +378,97 @@ function exportCSV() {
     const a    = document.createElement('a');
     a.href     = url;
     a.download = `spread-engine-trades-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function copyPositions() {
+    if (!_latestPositions.length) { alert('No open positions to copy.'); return; }
+    const header = 'ASSET\tSIDE\tSIZE\tENTRY\tMARK\tUNREALIZED P&L';
+    const rows = _latestPositions.map(p => {
+        const pnl = (p.pnl >= 0 ? '+' : '') + Number(p.pnl).toFixed(4);
+        return [p.ticker, p.side, p.size, Number(p.entryPrice).toFixed(4), Number(p.lastPrice).toFixed(4), pnl].join('\t');
+    });
+    navigator.clipboard.writeText([header, ...rows].join('\n'))
+        .then(() => {
+            const btn = document.getElementById('btn-copy-positions');
+            if (btn) { btn.innerText = '✓ COPIED'; setTimeout(() => { btn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg> COPY'; }, 2000); }
+        })
+        .catch(() => alert('Clipboard unavailable — try EXPORT CSV instead.'));
+}
+
+function exportPositionsCSV() {
+    if (!_latestPositions.length) { alert('No open positions to export.'); return; }
+    const header = 'asset,side,size,entry_price,mark_price,unrealized_pnl';
+    const rows = _latestPositions.map(p =>
+        [`"${p.ticker}"`, p.side, p.size,
+         Number(p.entryPrice).toFixed(6), Number(p.lastPrice).toFixed(6),
+         Number(p.pnl).toFixed(6)].join(',')
+    );
+    const csv  = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `spread-engine-positions-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function exportAll() {
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const lines = [];
+
+    // ── Section 1: Open Positions ──────────────────────────────────────────
+    lines.push('=== OPEN POSITIONS ===');
+    lines.push(`Exported: ${ts}`);
+    lines.push('asset,side,size,entry_price,mark_price,unrealized_pnl');
+    if (_latestPositions.length) {
+        _latestPositions.forEach(p => {
+            lines.push([`"${p.ticker}"`, p.side, p.size,
+                Number(p.entryPrice).toFixed(6), Number(p.lastPrice).toFixed(6),
+                Number(p.pnl).toFixed(6)].join(','));
+        });
+    } else {
+        lines.push('(no open positions)');
+    }
+
+    lines.push('');
+
+    // ── Section 2: Trade History ───────────────────────────────────────────
+    lines.push('=== TRADE HISTORY ===');
+    lines.push('time,asset,side,qty,price,realized_pnl');
+    if (_latestTradeHistory.length) {
+        [..._latestTradeHistory].reverse().forEach(t => {
+            const pnl = t.realizedPnl != null ? Number(t.realizedPnl).toFixed(6) : '';
+            lines.push([t.time || '', `"${t.ticker}"`, t.side, t.qty,
+                Number(t.price).toFixed(6), pnl].join(','));
+        });
+    } else {
+        lines.push('(no trade history)');
+    }
+
+    lines.push('');
+
+    // ── Section 3: Arb Pairs ───────────────────────────────────────────────
+    lines.push('=== ARB PAIRS (GABAGOOL) ===');
+    lines.push('pair_id,market,yes_cost,no_cost,locked_profit,status,settled_profit,opened_at');
+    if (_latestArbPairs.length) {
+        [..._latestArbPairs].reverse().forEach(p => {
+            const status = p.resolved ? 'SETTLED' : 'OPEN';
+            lines.push([p.pairId, `"${p.question}"`, p.yesCost, p.noCost,
+                p.lockedProfit, status, p.settledProfit, p.openedAt].join(','));
+        });
+    } else {
+        lines.push('(no arb pairs)');
+    }
+
+    const csv  = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `spread-engine-full-export-${new Date().toISOString().slice(0,10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
 }
