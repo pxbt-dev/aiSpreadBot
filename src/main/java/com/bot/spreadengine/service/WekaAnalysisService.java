@@ -16,6 +16,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 @Service
@@ -25,6 +26,12 @@ public class WekaAnalysisService {
     private final Map<String, Instances> headers = new ConcurrentHashMap<>();
     private final Map<String, Instances> datasets = new ConcurrentHashMap<>(); // Actual training data
     private static final String MODEL_DIR = "models/";
+
+    /** Features waiting for their outcome — keyed by tokenId */
+    private final Map<String, double[]> pendingFeatures = new ConcurrentHashMap<>();
+    /** How many real samples have been added since the last retrain */
+    private final AtomicInteger samplesSinceRetrain = new AtomicInteger(0);
+    private static final int RETRAIN_INTERVAL = 10;
 
     @PostConstruct
     public void init() {
@@ -118,6 +125,37 @@ public class WekaAnalysisService {
             log.info("✅ Ensemble brain (re)built and saved for {} [Size: {}]", marketType, dataset.numInstances());
         } catch (Exception e) {
             log.error("❌ Failed to build ensemble: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Store entry features for a token so they can be paired with the outcome on close.
+     * Call this immediately after a BUY is executed.
+     */
+    public void recordEntry(String tokenId, double[] features) {
+        pendingFeatures.put(tokenId, features.clone());
+        log.debug("📌 WEKA entry recorded for {}: features={}", tokenId, features);
+    }
+
+    /**
+     * Pair the stored entry features with the observed outcome and add a training sample.
+     * outcome: 1.0 = profitable trade, 0.0 = losing trade.
+     * Triggers a full retrain every RETRAIN_INTERVAL real samples.
+     * Call this immediately before a SELL (gap-reversal exit).
+     */
+    public void recordTradeOutcome(String tokenId, double outcome) {
+        double[] features = pendingFeatures.remove(tokenId);
+        if (features == null) {
+            log.warn("⚠️ WEKA outcome for {} has no matching entry — skipping", tokenId);
+            return;
+        }
+        addSample("Weather", features[0], features[1], features[2], features[3], outcome);
+        int count = samplesSinceRetrain.incrementAndGet();
+        log.info("🧠 WEKA feedback: tokenId={} outcome={} samples_since_retrain={}", tokenId, outcome, count);
+        if (count >= RETRAIN_INTERVAL) {
+            samplesSinceRetrain.set(0);
+            log.info("🔄 WEKA retrain triggered after {} real samples", RETRAIN_INTERVAL);
+            buildAndSave("Weather");
         }
     }
 

@@ -370,6 +370,16 @@ function handleEvent(event) {
     if (event.type === 'TEST_FILL') {
         flashStratStatus('strat-status-mm', 'FILLED');
     }
+    if (event.type === 'SCAN_INSIGHT') {
+        const msg = event.message || '';
+        const flag = msg.startsWith('GREEN') ? 'GREEN' : msg.startsWith('RED') ? 'RED' : 'YELLOW';
+        const scanEl = document.getElementById('val-scanner');
+        if (scanEl) {
+            scanEl.innerText = flag;
+            scanEl.className = 'node-val ' + (flag === 'GREEN' ? 'conf-green' : flag === 'RED' ? 'conf-red' : 'conf-yellow');
+        }
+        triggerNodePulse('SCAN_INSIGHT');
+    }
 }
 
 function flashStratStatus(id, label) {
@@ -527,6 +537,9 @@ function addLogEntry(event) {
         msgClass = 'green';
     } else if (event.type === 'SIM_WEATHER_ARB') {
         msgClass = 'sim-event'; // grey — simulation noise, not a real trade signal
+    } else if (event.type === 'SCAN_INSIGHT') {
+        const msg = event.message || '';
+        msgClass = msg.startsWith('GREEN') ? 'green' : msg.startsWith('RED') ? 'loss-red' : 'amber';
     } else if (event.type === 'SOLAR_UPDATE') {
         msgClass = 'blue';
     } else if (event.type === 'AUDIT_VETO' || event.type === 'STOP_LOSS') {
@@ -611,6 +624,10 @@ function triggerNodePulse(type) {
             spawnParticle('node-weka', 'node-bot', () => {
                 pulseNode('node-bot', 0);
             });
+            break;
+        case 'SCAN_INSIGHT':
+            pulseNode('node-scanner', 0);
+            spawnParticle('node-scanner', 'node-bot');
             break;
         case 'WEATHER_ARB':
             spawnParticle('node-weather', 'node-bot', () => {

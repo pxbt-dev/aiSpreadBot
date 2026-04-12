@@ -1,8 +1,10 @@
 package com.bot.spreadengine.service;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import com.bot.spreadengine.model.SpreadEvent;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -19,6 +21,7 @@ public class MarketScannerService {
     private final PolymarketService polymarketService;
     private final ClaudeAnalysisService claudeAnalysisService;
     private final PerformanceTracker performanceTracker;
+    private final SimpMessagingTemplate messagingTemplate;
     private final CopyOnWriteArrayList<ScannedMarket> activeMarkets = new CopyOnWriteArrayList<>();
 
     // Token-keyed caches populated during scan — used by RiskManagementService
@@ -30,10 +33,12 @@ public class MarketScannerService {
 
     public MarketScannerService(PolymarketService polymarketService,
                                 ClaudeAnalysisService claudeAnalysisService,
-                                PerformanceTracker performanceTracker) {
+                                PerformanceTracker performanceTracker,
+                                SimpMessagingTemplate messagingTemplate) {
         this.polymarketService   = polymarketService;
         this.claudeAnalysisService = claudeAnalysisService;
         this.performanceTracker  = performanceTracker;
+        this.messagingTemplate   = messagingTemplate;
     }
 
     /**
@@ -199,7 +204,7 @@ public class MarketScannerService {
 
                         double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
                         // ── Learning: apply session win-rate multiplier ───────────────────
-                        double perfMultiplier = performanceTracker.getScoreMultiplier(question);
+                        double perfMultiplier = performanceTracker.getScoreMultiplier(tokenId);
                         double score = liquidity * proximity * (isWeather ? 2.0 : 1.0) * perfMultiplier;
                         double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
                         if (Math.abs(arbSpread) > 0.03) {
@@ -257,6 +262,12 @@ public class MarketScannerService {
                 if (weatherCount == 0) {
                     log.warn("⚠️ No weather markets found in top 200 active markets — weather arb disabled until next scan");
                 }
+
+                // One Claude call per scan cycle — asynchronous, non-blocking
+                claudeAnalysisService.analyzeMarketScan(markets)
+                    .subscribe(insight -> messagingTemplate.convertAndSend("/topic/events",
+                        new SpreadEvent("SCAN_INSIGHT", insight, 0)),
+                        e -> log.warn("Scan insight failed: {}", e.getMessage()));
             }, e -> log.error("Market scan failed: {}", e.getMessage()));
     }
 

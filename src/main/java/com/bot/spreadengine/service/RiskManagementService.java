@@ -123,7 +123,7 @@ public class RiskManagementService {
             : (pos.getEntryPrice() - mid)  * pos.getSize();
         boolean isStopLoss = reason.equals("STOP_LOSS");
 
-        performanceTracker.record(pos.getTicker(), realizedPnL, pos.getStrategy(), isStopLoss);
+        performanceTracker.record(pos.getTokenId(), realizedPnL, pos.getStrategy(), isStopLoss);
 
         double pnlPct = pos.getEntryPrice() > 0
             ? ((mid - pos.getEntryPrice()) / pos.getEntryPrice()) * 100 : 0;

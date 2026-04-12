@@ -348,6 +348,7 @@ header {
 .log-event.loss-red { color: var(--red); }
 .log-event.blue     { color: var(--accent); }
 .log-event.sim-event { opacity: 0.3; }
+.log-event.amber    { color: var(--amber); }
 
 /* ─── Graph area ─────────────────────────────────────────────────────────── */
 .graph-area {

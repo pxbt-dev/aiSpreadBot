@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -251,6 +252,78 @@ public class ClaudeAnalysisService {
                     })
                     .cache(); // make the Mono replayable so all subscribers share the one result
         });
+    }
+
+    /**
+     * One Claude call per scan cycle with the top-5 candidates.
+     * Returns a brief insight string (GREEN/YELLOW/RED flag + ranked picks + any anomalies).
+     * Max 500 tokens, 10s timeout — fire-and-forget; callers broadcast via WebSocket.
+     */
+    public Mono<String> analyzeMarketScan(List<MarketScannerService.ScannedMarket> candidates) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            return Mono.just("SCAN INSIGHT DISABLED (no API key)");
+        }
+        if (candidates == null || candidates.isEmpty()) {
+            return Mono.just("SCAN INSIGHT: no candidates");
+        }
+
+        // Build a compact summary of the top 5 candidates for the prompt
+        String candidateLines = candidates.stream()
+            .limit(5)
+            .map(m -> String.format("  - \"%s\" | mid=%.3f | arb=%+.3f | weather=%s",
+                m.question().length() > 60 ? m.question().substring(0, 57) + "..." : m.question(),
+                m.mid(), m.arbSpread(), m.isWeather() ? "YES" : "NO"))
+            .collect(Collectors.joining("\n"));
+
+        String prompt =
+            "You are a quantitative strategist reviewing a Polymarket scan result.\n\n" +
+            "Top candidates ranked by liquidity × price-proximity:\n" +
+            candidateLines + "\n\n" +
+            "Fields: mid = implied probability, arb = structural arb spread (positive = guaranteed profit if both legs bought).\n\n" +
+            "In 2-3 sentences: rate the overall opportunity set GREEN (strong), YELLOW (mixed), or RED (weak/risky). " +
+            "Note the single best pick and any anomalies (extreme arb, suspiciously stale prices, weather edge).\n\n" +
+            "Respond ONLY in JSON: {\"flag\": \"GREEN|YELLOW|RED\", \"insight\": \"your 2-3 sentence summary\"}";
+
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
+
+        Map<String, Object> request = new HashMap<>();
+        request.put("model", model);
+        request.put("max_tokens", 500);
+        request.put("messages", List.of(message));
+
+        return webClient.post()
+                .uri("/v1/messages")
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .timeout(java.time.Duration.ofSeconds(10))
+                .map(response -> {
+                    try {
+                        List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.get("content");
+                        String text = (String) contentList.get(0).get("text");
+                        int start = text.indexOf("{");
+                        int end   = text.lastIndexOf("}");
+                        if (start == -1 || end == -1) return "SCAN INSIGHT (raw): " + text;
+                        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                        com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(text.substring(start, end + 1));
+                        String flag    = root.path("flag").asText("YELLOW");
+                        String insight = root.path("insight").asText("No insight returned.");
+                        log.info("🔭 Scan insight [{}]: {}", flag, insight);
+                        return flag + ": " + insight;
+                    } catch (Exception e) {
+                        log.warn("Scan insight parse error: {}", e.getMessage());
+                        return "SCAN INSIGHT (parse error)";
+                    }
+                })
+                .onErrorResume(e -> {
+                    log.warn("Scan insight unavailable: {}", e.getMessage());
+                    return Mono.just("SCAN INSIGHT OFFLINE");
+                });
     }
 
     public String getModelName() { return model; }

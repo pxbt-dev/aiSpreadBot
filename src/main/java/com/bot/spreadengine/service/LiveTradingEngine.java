@@ -61,6 +61,9 @@ public class LiveTradingEngine {
     @Autowired
     private RiskManagementService riskManagementService;
 
+    @Autowired
+    private PerformanceTracker performanceTracker;
+
     private double currentConfidence = 0.0;
     private String currentAuditNote = "READY";
     private double sentimentScore = 0.0;
@@ -195,6 +198,11 @@ public class LiveTradingEngine {
                 PositionService.Position openPos = positionService.getPositionMap().get(tokenId);
                 if (openPos != null && gap < GAP_CLOSE_THRESHOLD) {
                     log.info("📉 ARB CLOSED (gap={:.3f}) — exiting {} x{}", gap, openPos.getTicker(), openPos.getSize());
+                    // Feed real outcome back into WEKA before closing the position
+                    double outcome = marketProb > openPos.getEntryPrice() ? 1.0 : 0.0;
+                    wekaService.recordTradeOutcome(tokenId, outcome);
+                    double gapCloseRealizedPnL = (marketProb - openPos.getEntryPrice()) * openPos.getSize();
+                    performanceTracker.record(tokenId, gapCloseRealizedPnL, "WEATHER_ARB", false);
                     positionService.addTrade(tokenId, openPos.getTicker(), "SELL", openPos.getSize(), marketProb, "WEATHER_ARB");
                     messagingTemplate.convertAndSend("/topic/events",
                         new SpreadEvent("TRADE", String.format("ARB CLOSED EXIT: gap=%.1f%% @ $%.3f", gap * 100, marketProb), 0));
@@ -265,6 +273,7 @@ public class LiveTradingEngine {
                                             String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
                                         messagingTemplate.convertAndSend("/topic/events",
                                             new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
+                                        wekaService.recordEntry(tokenId, features);
                                         positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice, "WEATHER_ARB");
                                         messagingTemplate.convertAndSend("/topic/events",
                                             new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
@@ -277,6 +286,7 @@ public class LiveTradingEngine {
                         } else {
                             log.info("🔥 ENSEMBLE APPROVED: Confidence={}, netEV={:.3f}, Sizing: ${}",
                                 String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
+                            wekaService.recordEntry(tokenId, features);
                             positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice, "WEATHER_ARB");
                             messagingTemplate.convertAndSend("/topic/events",
                                 new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
