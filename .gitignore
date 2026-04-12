@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+test_api.sh
+
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.DS_Store
+
+# Logs
+*.log
+logs/
+
+*settings.local.json
+
+# Runtime-generated Weka models — rebuilt automatically on startup
+models/
