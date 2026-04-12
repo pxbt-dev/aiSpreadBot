@@ -169,7 +169,10 @@ public class LiveTradingEngine {
     @Scheduled(fixedRate = 5000)
     public void executeWeatherArb() {
         MarketScannerService.ScannedMarket market = marketScanner.getSecondaryMarket();
-        if (market == null) return;
+        if (market == null) {
+            log.debug("⛅ No weather market available — scanner found none in top 200");
+            return;
+        }
         String tokenId = market.tokenId();
         String marketTicker = market.question().length() > 40
             ? market.question().substring(0, 37) + "..."
@@ -222,11 +225,17 @@ public class LiveTradingEngine {
                 double consensus = wekaService.getConsensusScore("Weather", features);
 
                 // --- 3. Signal CV gate: skip if WEKA and NOAA disagree too much (CV > 0.3)
+                // Bypass during WEKA bootstrap (< 5 real samples) — returning 0.5 is
+                // uncertainty, not disagreement; enforcing CV then blocks every trade.
                 double signalCV = computeSignalCV(consensus, noaaProb);
-                if (signalCV > 0.3) {
+                boolean wekaBootstrap = wekaService.getRealSampleCount("Weather") < 5;
+                if (!wekaBootstrap && signalCV > 0.3) {
                     log.warn("⚠️ Signal CV={:.2f} > 0.30 — WEKA={:.2f} vs NOAA={:.2f} disagree, skipping",
                         signalCV, consensus, noaaProb);
                     return;
+                }
+                if (wekaBootstrap) {
+                    log.debug("🌱 WEKA bootstrap mode — CV gate bypassed (CV={:.2f})", signalCV);
                 }
 
                 // Confidence (used for Claude audit gate threshold only)

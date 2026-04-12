@@ -129,6 +129,18 @@ public class WekaAnalysisService {
     }
 
     /**
+     * Number of real (non-seed) training samples accumulated for a market type.
+     * The ensemble is seeded with 4 synthetic samples; anything beyond that is real feedback.
+     * Used to determine whether the CV gate should be enforced.
+     */
+    private static final int SEED_SAMPLE_COUNT = 4;
+
+    public int getRealSampleCount(String marketType) {
+        Instances ds = datasets.get(marketType);
+        return ds == null ? 0 : Math.max(0, ds.numInstances() - SEED_SAMPLE_COUNT);
+    }
+
+    /**
      * Store entry features for a token so they can be paired with the outcome on close.
      * Call this immediately after a BUY is executed.
      */
