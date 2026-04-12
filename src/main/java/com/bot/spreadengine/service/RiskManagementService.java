@@ -112,7 +112,7 @@ public class RiskManagementService {
 
     private void exitPosition(PositionService.Position pos, double mid, String reason) {
         String exitSide = pos.getSide().equalsIgnoreCase("BUY") ? "SELL" : "BUY";
-        positionService.addTrade(pos.getTokenId(), pos.getTicker(), exitSide, pos.getSize(), mid);
+        positionService.addTrade(pos.getTokenId(), pos.getTicker(), exitSide, pos.getSize(), mid, pos.getStrategy());
 
         double pnlPct = pos.getEntryPrice() > 0
             ? ((mid - pos.getEntryPrice()) / pos.getEntryPrice()) * 100 : 0;

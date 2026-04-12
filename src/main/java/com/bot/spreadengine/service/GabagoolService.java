@@ -197,9 +197,9 @@ public class GabagoolService {
 
         // Record both legs in position service
         positionService.addTrade(pair.getYesTokenId(), pair.getQuestion() + " [YES]",
-                                 "BUY", pair.getYesQty(), pair.getYesCost());
+                                 "BUY", pair.getYesQty(), pair.getYesCost(), "GABAGOOL");
         positionService.addTrade(pair.getNoTokenId(),  pair.getQuestion() + " [NO]",
-                                 "BUY", pair.getNoQty(),  pair.getNoCost());
+                                 "BUY", pair.getNoQty(),  pair.getNoCost(),  "GABAGOOL");
 
         activePairs.add(pair);
 
@@ -249,13 +249,13 @@ public class GabagoolService {
                     String winToken  = yesWon ? pair.getYesTokenId() : pair.getNoTokenId();
                     int    winQty    = yesWon ? pair.getYesQty()     : pair.getNoQty();
                     positionService.addTrade(winToken, pair.getQuestion() + " [" + winSide + "]",
-                                             "SELL", winQty, 1.00);
+                                             "SELL", winQty, 1.00, "GABAGOOL");
 
                     // Close the losing leg at $0 (expired)
                     String loseToken = yesWon ? pair.getNoTokenId()  : pair.getYesTokenId();
                     int    loseQty   = yesWon ? pair.getNoQty()      : pair.getYesQty();
                     positionService.addTrade(loseToken, pair.getQuestion() + " [" + loseSide + "]",
-                                             "SELL", loseQty, 0.00);
+                                             "SELL", loseQty, 0.00, "GABAGOOL");
 
                     log.info("✅ [Gabagool] SETTLED {} — {} won, profit +${} (locked was +${})",
                         pair.getPairId(), winSide,

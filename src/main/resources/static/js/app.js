@@ -215,6 +215,7 @@ function renderHistory(trades) {
             <td>${t.qty}</td>
             <td style="font-family: 'JetBrains Mono';">$${Number(t.price).toFixed(3)}</td>
             <td class="${pnlClass}" style="font-family: 'JetBrains Mono';">${pnlDisplay}</td>
+            <td>${stratBadge(t.strategy)}</td>
         `;
         body.appendChild(row);
     });
@@ -236,7 +237,7 @@ function renderArbPairs(arbData) {
 
     const pairs = arbData.pairs || [];
     if (!pairs.length) {
-        body.innerHTML = '<tr><td colspan="6" style="text-align:center;opacity:0.3;padding:18px;font-size:9px;letter-spacing:1px;">NO ACTIVE ARB PAIRS — SCANNING SHORT-DURATION MARKETS</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;opacity:0.3;padding:18px;font-size:9px;letter-spacing:1px;">NO ACTIVE ARB PAIRS — SCANNING SHORT-DURATION MARKETS</td></tr>';
         return;
     }
 
@@ -247,14 +248,26 @@ function renderArbPairs(arbData) {
             : `<span style="color:var(--teal)">OPEN</span>`;
         tr.innerHTML = `
             <td style="color:var(--text-dim);font-size:9px">${p.pairId}</td>
-            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.question}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.question}</td>
             <td class="pos-buy">$${p.yesCost}</td>
             <td class="pos-buy">$${p.noCost}</td>
             <td class="pnl-pos">+$${p.lockedProfit}</td>
+            <td>${stratBadge('GABAGOOL')}</td>
             <td>${status}</td>
         `;
         body.appendChild(tr);
     });
+}
+
+const STRATEGY_LABELS = {
+    'MARKET_MAKING':   { label: 'MM',         color: 'var(--green)' },
+    'WEATHER_ARB':     { label: 'WEATHER',     color: 'var(--accent)' },
+    'STRUCTURAL_ARB':  { label: 'STRUCT',      color: 'var(--purple)' },
+    'GABAGOOL':        { label: 'GABAGOOL',    color: 'var(--teal)' },
+};
+function stratBadge(strategy) {
+    const s = STRATEGY_LABELS[strategy] || { label: strategy || 'MM', color: 'var(--text-dim)' };
+    return `<span style="font-size:8px;letter-spacing:1px;padding:1px 5px;border-radius:2px;border:1px solid ${s.color};color:${s.color}">${s.label}</span>`;
 }
 
 function renderPositions(positions) {
@@ -264,7 +277,7 @@ function renderPositions(positions) {
     body.innerHTML = '';
     
     if (!positions || positions.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" style="text-align:center; opacity:0.3; padding:25px; font-size:9px; letter-spacing:1px;">NO OPEN POSITIONS</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center; opacity:0.3; padding:25px; font-size:9px; letter-spacing:1px;">NO OPEN POSITIONS</td></tr>';
         return;
     }
     
@@ -281,6 +294,7 @@ function renderPositions(positions) {
             <td>$${Number(pos.entryPrice).toFixed(3)}</td>
             <td class="mark-price">$${Number(pos.lastPrice).toFixed(3)}</td>
             <td class="${pnlClass}">${(pnl >= 0 ? '+$' : '-$')}${Math.abs(pnl).toFixed(2)}</td>
+            <td>${stratBadge(pos.strategy)}</td>
         `;
         body.appendChild(tr);
     });

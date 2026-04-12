@@ -182,7 +182,7 @@ public class SimulationEngine {
                 orderPayload.put("signature", signature);
                 polymarketService.placeOrder(orderPayload).subscribe(res -> {
                     log.info("LIVE ORDER PLACED: {}", res);
-                    positionService.addTrade(tokenId, ticker, side.equals("BID") ? "BUY" : "SELL", qty, fillPrice);
+                    positionService.addTrade(tokenId, ticker, side.equals("BID") ? "BUY" : "SELL", qty, fillPrice, "MARKET_MAKING");
                     sendStats();
                 });
             } catch (Exception e) {
@@ -193,7 +193,7 @@ public class SimulationEngine {
             log.info("{} FILL: {} {} @ ${} qty {}", prefix, side, ticker, df3.format(fillPrice), qty);
             messagingTemplate.convertAndSend("/topic/events", new SpreadEvent("TEST_FILL",
                 String.format("%s FILL: %s %s @ $%s qty %d", prefix, side, ticker, df3.format(fillPrice), qty), fillPrice));
-            positionService.addTrade(tokenId, ticker, side, qty, fillPrice);
+            positionService.addTrade(tokenId, ticker, side, qty, fillPrice, "MARKET_MAKING");
         }
     }
 

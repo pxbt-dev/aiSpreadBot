@@ -34,6 +34,7 @@ public class PositionService {
         private double entryPrice;
         private double lastPrice;
         private double pnl;
+        private String strategy = "MARKET_MAKING";
     }
 
     @Data
@@ -45,12 +46,19 @@ public class PositionService {
         private int qty;
         private double price;
         private double realizedPnL;
+        private String strategy;
     }
 
     public synchronized void addTrade(String tokenId, String ticker, String side, int qty, double fillPrice) {
+        addTrade(tokenId, ticker, side, qty, fillPrice, "MARKET_MAKING");
+    }
+
+    public synchronized void addTrade(String tokenId, String ticker, String side, int qty, double fillPrice, String strategy) {
         Position pos = openPositions.getOrDefault(tokenId, new Position());
         pos.setTokenId(tokenId);
         pos.setTicker(ticker);
+        // Set strategy only when opening a new position
+        if (pos.getSize() == 0) pos.setStrategy(strategy);
         
         int oldSize = pos.getSize();
         double oldEntry = pos.getEntryPrice();
@@ -98,7 +106,8 @@ public class PositionService {
             side.toUpperCase(),
             qty,
             fillPrice,
-            realizedTradePnL
+            realizedTradePnL,
+            strategy
         ));
 
         totalTrades++;

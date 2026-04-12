@@ -195,7 +195,7 @@ public class LiveTradingEngine {
                 PositionService.Position openPos = positionService.getPositionMap().get(tokenId);
                 if (openPos != null && gap < GAP_CLOSE_THRESHOLD) {
                     log.info("📉 ARB CLOSED (gap={:.3f}) — exiting {} x{}", gap, openPos.getTicker(), openPos.getSize());
-                    positionService.addTrade(tokenId, openPos.getTicker(), "SELL", openPos.getSize(), marketProb);
+                    positionService.addTrade(tokenId, openPos.getTicker(), "SELL", openPos.getSize(), marketProb, "WEATHER_ARB");
                     messagingTemplate.convertAndSend("/topic/events",
                         new SpreadEvent("TRADE", String.format("ARB CLOSED EXIT: gap=%.1f%% @ $%.3f", gap * 100, marketProb), 0));
                     return;
@@ -265,7 +265,7 @@ public class LiveTradingEngine {
                                             String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
                                         messagingTemplate.convertAndSend("/topic/events",
                                             new SpreadEvent("AUDIT_PASS", currentAuditNote.replace("AI AUDITED: ", ""), (int)(finalConfidence*100)));
-                                        positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
+                                        positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice, "WEATHER_ARB");
                                         messagingTemplate.convertAndSend("/topic/events",
                                             new SpreadEvent("TRADE", "EXECUTED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                                     } else {
@@ -277,7 +277,7 @@ public class LiveTradingEngine {
                         } else {
                             log.info("🔥 ENSEMBLE APPROVED: Confidence={}, netEV={:.3f}, Sizing: ${}",
                                 String.format("%.2f", finalConfidence), netEV, String.format("%.2f", kellySize));
-                            positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice);
+                            positionService.addTrade(tokenId, marketTicker, "BUY", qty, tradePrice, "WEATHER_ARB");
                             messagingTemplate.convertAndSend("/topic/events",
                                 new SpreadEvent("TRADE", "ENSEMBLE APPROVED (" + (int)(finalConfidence*100) + "% AI CONF)", (int)(gap*100)));
                         }
@@ -334,8 +334,8 @@ public class LiveTradingEngine {
                         String.format("%.3f", yesMid + noMid), String.format("%+.3f", liveArb),
                         ticker, yesQty, String.format("%.3f", yesMid), noQty, String.format("%.3f", noMid));
 
-                    positionService.addTrade(yesTokenId, ticker + " YES", "BUY", yesQty, yesMid);
-                    positionService.addTrade(noTokenId,  ticker + " NO",  "BUY", noQty,  noMid);
+                    positionService.addTrade(yesTokenId, ticker + " YES", "BUY", yesQty, yesMid, "STRUCTURAL_ARB");
+                    positionService.addTrade(noTokenId,  ticker + " NO",  "BUY", noQty,  noMid,  "STRUCTURAL_ARB");
 
                     int gapPts = (int)(liveArb * 100);
                     messagingTemplate.convertAndSend("/topic/events",
