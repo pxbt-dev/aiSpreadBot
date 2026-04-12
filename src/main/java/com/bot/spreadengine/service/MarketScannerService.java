@@ -18,6 +18,7 @@ public class MarketScannerService {
 
     private final PolymarketService polymarketService;
     private final ClaudeAnalysisService claudeAnalysisService;
+    private final PerformanceTracker performanceTracker;
     private final CopyOnWriteArrayList<ScannedMarket> activeMarkets = new CopyOnWriteArrayList<>();
 
     // Token-keyed caches populated during scan — used by RiskManagementService
@@ -27,9 +28,12 @@ public class MarketScannerService {
     public java.time.Instant getGameStartTime(String tokenId) { return tokenGameStartTimes.get(tokenId); }
     public double getRewardPerGame(String tokenId) { return tokenRewardTiers.getOrDefault(tokenId, 0.0); }
 
-    public MarketScannerService(PolymarketService polymarketService, ClaudeAnalysisService claudeAnalysisService) {
-        this.polymarketService = polymarketService;
+    public MarketScannerService(PolymarketService polymarketService,
+                                ClaudeAnalysisService claudeAnalysisService,
+                                PerformanceTracker performanceTracker) {
+        this.polymarketService   = polymarketService;
         this.claudeAnalysisService = claudeAnalysisService;
+        this.performanceTracker  = performanceTracker;
     }
 
     /**
@@ -125,7 +129,7 @@ public class MarketScannerService {
         scan();
     }
 
-    @Scheduled(fixedRate = 3600000) // Hourly
+    @Scheduled(fixedRate = 120_000) // Every 2 minutes
     public void scan() {
         log.info("🔍 Market scanner starting...");
         polymarketService.fetchActiveMarkets()
@@ -185,8 +189,18 @@ public class MarketScannerService {
                             ? polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0)
                             : Mono.just(0.0));
                     return yesMidMono.zipWith(noMidMono, (yesMid, noMid) -> {
+                        // ── Penny market filter: skip markets priced under $0.01 ──────────
+                        // A $0.002 spread on a sub-cent market is 20-36% of price — physically
+                        // impossible to fill and inflates simulated PnL with phantom gains.
+                        if (yesMid > 0 && yesMid < 0.01) {
+                            log.debug("🪙 PENNY FILTER: skipping {} (mid={})", question, yesMid);
+                            return null; // filtered out below
+                        }
+
                         double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
-                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0);
+                        // ── Learning: apply session win-rate multiplier ───────────────────
+                        double perfMultiplier = performanceTracker.getScoreMultiplier(question);
+                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0) * perfMultiplier;
                         double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
                         if (Math.abs(arbSpread) > 0.03) {
                             log.warn("⚖️ ARB INVARIANT: YES={} + NO={} = {} (spread={}) — {}",
@@ -204,6 +218,7 @@ public class MarketScannerService {
                     });
                 });
             })
+            .filter(java.util.Objects::nonNull) // remove penny-market nulls
             .sort((a, b) -> Double.compare(b.score(), a.score()))
             .take(10) // Wider net so we can split primary/secondary properly
             .collectList()

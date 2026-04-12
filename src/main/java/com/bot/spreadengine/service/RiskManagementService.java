@@ -32,15 +32,18 @@ public class RiskManagementService {
     private final PolymarketService polymarketService;
     private final SimpMessagingTemplate messagingTemplate;
     private final MarketScannerService marketScanner;
+    private final PerformanceTracker performanceTracker;
 
     public RiskManagementService(PositionService positionService,
                                  PolymarketService polymarketService,
                                  SimpMessagingTemplate messagingTemplate,
-                                 MarketScannerService marketScanner) {
-        this.positionService  = positionService;
-        this.polymarketService = polymarketService;
-        this.messagingTemplate = messagingTemplate;
-        this.marketScanner    = marketScanner;
+                                 MarketScannerService marketScanner,
+                                 PerformanceTracker performanceTracker) {
+        this.positionService     = positionService;
+        this.polymarketService   = polymarketService;
+        this.messagingTemplate   = messagingTemplate;
+        this.marketScanner       = marketScanner;
+        this.performanceTracker  = performanceTracker;
     }
 
     /** Scans all open positions for stop-loss / take-profit triggers. */
@@ -114,9 +117,17 @@ public class RiskManagementService {
         String exitSide = pos.getSide().equalsIgnoreCase("BUY") ? "SELL" : "BUY";
         positionService.addTrade(pos.getTokenId(), pos.getTicker(), exitSide, pos.getSize(), mid, pos.getStrategy());
 
+        boolean isBuy = pos.getSide().equalsIgnoreCase("BUY");
+        double realizedPnL = isBuy
+            ? (mid - pos.getEntryPrice()) * pos.getSize()
+            : (pos.getEntryPrice() - mid)  * pos.getSize();
+        boolean isStopLoss = reason.equals("STOP_LOSS");
+
+        performanceTracker.record(pos.getTicker(), realizedPnL, pos.getStrategy(), isStopLoss);
+
         double pnlPct = pos.getEntryPrice() > 0
             ? ((mid - pos.getEntryPrice()) / pos.getEntryPrice()) * 100 : 0;
-        String label = reason.equals("STOP_LOSS")
+        String label = isStopLoss
             ? String.format("STOP-LOSS HIT: %s @ $%.3f (%.1f%%)", pos.getTicker(), mid, pnlPct)
             : String.format("TAKE-PROFIT HIT: %s @ $%.3f (+%.1f%%)", pos.getTicker(), mid, pnlPct);
 

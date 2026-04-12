@@ -165,6 +165,17 @@ function handleStats(stats) {
     renderPositions(_latestPositions);
     renderHistory(_latestTradeHistory);
     if (stats.arbPairs) renderArbPairs(stats.arbPairs);
+    renderAnalytics(stats);
+
+    // Build badge — show once git metadata arrives
+    if (stats.buildNumber) {
+        const badge = document.getElementById('build-badge');
+        if (badge) {
+            const commit = stats.buildCommit ? ' · ' + stats.buildCommit : '';
+            badge.innerText = 'BUILD #' + stats.buildNumber + commit;
+            badge.style.display = 'block';
+        }
+    }
 }
 
 function switchTab(tab) {
@@ -702,4 +713,175 @@ function updateSkippedBadge(count) {
     } else {
         badge.style.display = 'none';
     }
+}
+
+// ─── FLIP UI / Analytics Panel ───────────────────────────────────────────────
+
+let _analyticsMode = false;
+let _latestStats   = null; // full stats snapshot for re-render on flip
+
+function flipUI() {
+    _analyticsMode = !_analyticsMode;
+    const mainContent  = document.querySelector('.main-content');
+    const analyticsPanel = document.getElementById('analytics-panel');
+    const btn = document.getElementById('flip-btn');
+
+    if (_analyticsMode) {
+        mainContent.style.display   = 'none';
+        analyticsPanel.style.display = 'flex';
+        if (btn) btn.classList.add('active');
+        if (_latestStats) renderAnalytics(_latestStats);
+    } else {
+        mainContent.style.display    = '';
+        analyticsPanel.style.display = 'none';
+        if (btn) btn.classList.remove('active');
+    }
+}
+
+function renderAnalytics(stats) {
+    _latestStats = stats;
+    if (!_analyticsMode) return; // don't render while hidden
+    renderPnlCurve(stats.history || []);
+    renderStratBreakdown(stats.stratBreakdown || {});
+    renderReputation(stats.marketPerf || []);
+}
+
+// ── PnL Curve ─────────────────────────────────────────────────────────────────
+function renderPnlCurve(history) {
+    const svg = document.getElementById('pnl-chart');
+    if (!svg) return;
+
+    // Compute cumulative PnL series from history (chronological order)
+    const sorted = [...history].reverse(); // history is newest-first
+    let cum = 0;
+    const points = [{t: 0, v: 0}];
+    sorted.forEach((t, i) => {
+        cum += Number(t.realizedPnL || 0);
+        points.push({t: i + 1, v: cum});
+    });
+    if (points.length < 2) {
+        svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="rgba(255,255,255,0.2)" font-size="11" font-family="monospace">NO CLOSED TRADES YET</text>';
+        return;
+    }
+
+    const W = svg.clientWidth  || 600;
+    const H = svg.clientHeight || 120;
+    const pad = {t: 12, r: 12, b: 24, l: 44};
+    const xs = W - pad.l - pad.r;
+    const ys = H - pad.t - pad.b;
+
+    const minV = Math.min(0, ...points.map(p => p.v));
+    const maxV = Math.max(0, ...points.map(p => p.v));
+    const rangeV = maxV - minV || 0.001;
+
+    const px = i => pad.l + (i / (points.length - 1)) * xs;
+    const py = v => pad.t + (1 - (v - minV) / rangeV) * ys;
+
+    // Zero line
+    const zy = py(0);
+    let d = `M${px(0)},${py(points[0].v)}`;
+    for (let i = 1; i < points.length; i++) d += ` L${px(i)},${py(points[i].v)}`;
+
+    // Fill path (closed)
+    const fill = d + ` L${px(points.length-1)},${zy} L${px(0)},${zy} Z`;
+
+    const isPos = cum >= 0;
+    const lineCol = isPos ? '#4dffb4' : '#f06070';
+    const fillCol = isPos ? 'rgba(77,255,180,0.12)' : 'rgba(240,96,112,0.12)';
+
+    // Y-axis labels
+    const yLabels = [minV, 0, maxV].filter((v, i, a) => a.indexOf(v) === i);
+    const yLabelsSvg = yLabels.map(v =>
+        `<text x="${pad.l - 4}" y="${py(v) + 4}" text-anchor="end" fill="rgba(255,255,255,0.35)"
+         font-size="9" font-family="monospace">${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(3)}</text>`
+    ).join('');
+
+    // Current value label
+    const lastPy = py(cum);
+    const label = `${cum >= 0 ? '+' : ''}$${cum.toFixed(4)}`;
+
+    svg.innerHTML = `
+      <defs>
+        <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${lineCol}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="${lineCol}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <line x1="${pad.l}" y1="${zy}" x2="${W - pad.r}" y2="${zy}" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="3,3"/>
+      <path d="${fill}" fill="url(#pnlGrad)"/>
+      <path d="${d}" fill="none" stroke="${lineCol}" stroke-width="1.5"/>
+      <circle cx="${px(points.length-1)}" cy="${lastPy}" r="3" fill="${lineCol}"/>
+      <text x="${px(points.length-1) + 6}" y="${lastPy + 4}" fill="${lineCol}" font-size="10" font-family="monospace" font-weight="700">${label}</text>
+      ${yLabelsSvg}
+    `;
+}
+
+// ── Strategy Breakdown ─────────────────────────────────────────────────────────
+function renderStratBreakdown(breakdown) {
+    const el = document.getElementById('strat-breakdown-body');
+    if (!el) return;
+
+    const STRATS = ['MARKET_MAKING', 'WEATHER_ARB', 'STRUCTURAL_ARB', 'GABAGOOL'];
+    const LABELS = {
+        MARKET_MAKING:  {label: 'MARKET MAKING', color: 'var(--green)'},
+        WEATHER_ARB:    {label: 'WEATHER ARB',   color: 'var(--accent)'},
+        STRUCTURAL_ARB: {label: 'STRUCTURAL',     color: 'var(--purple)'},
+        GABAGOOL:       {label: 'GABAGOOL',       color: 'var(--teal)'},
+    };
+
+    const allPnLs = STRATS.map(s => Math.abs(Number((breakdown[s] || {}).pnl || 0)));
+    const maxAbs = Math.max(...allPnLs, 0.001);
+
+    el.innerHTML = STRATS.map(s => {
+        const d  = breakdown[s] || {wins: 0, trades: 0, pnl: '0.00'};
+        const pnl = Number(d.pnl || 0);
+        const wr  = d.trades > 0 ? Math.round(d.wins / d.trades * 100) : 0;
+        const barW = Math.round(Math.abs(pnl) / maxAbs * 100);
+        const meta = LABELS[s] || {label: s, color: '#fff'};
+        const pnlStr = `${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}`;
+        const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        return `
+          <div class="strat-row">
+            <div class="strat-row-name" style="color:${meta.color}">${meta.label}</div>
+            <div class="strat-row-bar-wrap">
+              <div class="strat-row-bar" style="width:${barW}%;background:${meta.color}"></div>
+            </div>
+            <div class="strat-row-pnl" style="color:${pnlCol}">${pnlStr}</div>
+            <div class="strat-row-meta">${d.trades} trades &nbsp;·&nbsp; ${wr}% WR</div>
+          </div>`;
+    }).join('');
+}
+
+// ── Market Reputation Table ───────────────────────────────────────────────────
+function renderReputation(marketPerf) {
+    const body = document.getElementById('reputation-body');
+    if (!body) return;
+    if (!marketPerf || marketPerf.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" style="opacity:0.3;text-align:center;padding:12px;">No closed trades yet — learning begins after first exit</td></tr>';
+        return;
+    }
+    body.innerHTML = marketPerf.map(m => {
+        const wr = Number(m.winRate || 0);
+        const pnl = Number(m.totalPnL || 0);
+        const wrCol = wr >= 60 ? 'var(--green)' : wr >= 45 ? 'var(--amber)' : 'var(--red)';
+        const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const mult = Number(m.trades) >= 5
+            ? (wr >= 65 ? '1.4×' : wr >= 55 ? '1.2×' : wr <= 25 ? '0.3×' : wr <= 35 ? '0.6×' : '1.0×')
+            : '—';
+        const cooldown = Number(m.cooldownMin || 0);
+        const statusHtml = cooldown > 0
+            ? `<span style="color:var(--red);font-weight:700">COOLDOWN ${cooldown}m</span>`
+            : Number(m.trades) < 5
+                ? `<span style="opacity:0.4">LEARNING</span>`
+                : `<span style="color:var(--green)">ACTIVE</span>`;
+        const ticker = (m.ticker || '').length > 38 ? m.ticker.substring(0, 35) + '...' : (m.ticker || '');
+        return `<tr>
+          <td title="${m.ticker}">${ticker}</td>
+          <td>${m.trades}</td>
+          <td style="color:${wrCol};font-weight:700">${wr.toFixed(0)}%</td>
+          <td style="color:${pnlCol}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(4)}</td>
+          <td style="opacity:0.7">${mult}</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+    }).join('');
 }

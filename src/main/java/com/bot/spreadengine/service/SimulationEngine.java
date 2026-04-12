@@ -76,6 +76,15 @@ public class SimulationEngine {
     private MarketScannerService marketScanner;
 
     @Autowired
+    private PerformanceTracker performanceTracker;
+
+    @Autowired(required = false)
+    private org.springframework.boot.info.GitProperties gitProperties;
+
+    @Autowired(required = false)
+    private org.springframework.boot.info.BuildProperties buildProperties;
+
+    @Autowired
     @org.springframework.context.annotation.Lazy
     private GabagoolService gabagoolService;
 
@@ -103,7 +112,10 @@ public class SimulationEngine {
         // Prefer scanner markets — they have validated Gamma prices and active liquidity.
         // Falling back to the raw CLOB pool causes most picks to fail getMidpoint (V2 CLOB
         // returns 0 for inactive books), which produces near-zero trade throughput.
-        List<MarketScannerService.ScannedMarket> scannerMarkets = marketScanner.getActiveMarkets();
+        List<MarketScannerService.ScannedMarket> scannerMarkets = marketScanner.getActiveMarkets()
+            .stream()
+            .filter(m -> !performanceTracker.isOnCooldown(m.question()))
+            .collect(java.util.stream.Collectors.toList());
         if (scannerMarkets.isEmpty()) {
             // Scanner hasn't run yet — fall back to CLOB pool briefly
             List<Map<String, String>> currentMarkets = new ArrayList<>(trackedMarkets);
@@ -423,6 +435,45 @@ public class SimulationEngine {
             log.info("📊 Stats Broadcast: {} active positions", positionService.getPositions().size());
         }
         stats.put("uptime", uptimeStr);
+        // ── Learning / performance stats for analytics panel ─────────────────
+        // Serialize market stats: list of {ticker, trades, wins, winRate, totalPnL, cooldown}
+        List<Map<String, Object>> marketPerf = new ArrayList<>();
+        performanceTracker.getAllStats().forEach((ticker, ms) -> {
+            Map<String, Object> entry = new HashMap<>();
+            entry.put("ticker",   ticker);
+            entry.put("trades",   ms.trades());
+            entry.put("wins",     ms.wins());
+            entry.put("winRate",  df2.format(ms.winRate() * 100));
+            entry.put("totalPnL", df2.format(ms.totalPnL()));
+            entry.put("cooldownMin", ms.cooldownMinutes());
+            marketPerf.add(entry);
+        });
+        // Sort by total PnL descending
+        marketPerf.sort((a, b) -> Double.compare(
+            Double.parseDouble((String) b.get("totalPnL")),
+            Double.parseDouble((String) a.get("totalPnL"))));
+        stats.put("marketPerf", marketPerf);
+
+        // Strategy breakdown
+        Map<String, Object> stratBreakdown = new HashMap<>();
+        performanceTracker.getStrategyStats().forEach((strategy, arr) -> {
+            Map<String, Object> s2 = new HashMap<>();
+            s2.put("wins",   (int) arr[0]);
+            s2.put("trades", (int) arr[1]);
+            s2.put("pnl",    df2.format(arr[2]));
+            stratBreakdown.put(strategy, s2);
+        });
+        stats.put("stratBreakdown", stratBreakdown);
+
+        // Build / git metadata — null-safe in case maven plugins haven't run yet
+        if (gitProperties != null) {
+            stats.put("buildNumber", gitProperties.get("total.commit.count"));
+            stats.put("buildCommit", gitProperties.getShortCommitId());
+            stats.put("buildBranch", gitProperties.getBranch());
+        }
+        if (buildProperties != null) {
+            stats.put("buildVersion", buildProperties.getVersion());
+        }
         double wfe = computeWFE();
         stats.put("wfe", wfe >= 0 ? df2.format(wfe) : "N/A");
         if (wfe >= 0 && wfe < 0.4) {

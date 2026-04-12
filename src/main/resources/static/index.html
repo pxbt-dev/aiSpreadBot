@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>S P R E A D E N G I N E</title>
-    <link rel="stylesheet" href="css/style.css?v=3">
+    <link rel="stylesheet" href="css/style.css?v=4">
 </head>
 <body>
     <div id="app">
@@ -40,6 +40,14 @@
             <div class="header-right-badges">
                 <div id="stale-badge"   class="stale-badge"   style="display:none;">NO SIGNAL</div>
                 <div id="skipped-badge" class="skipped-badge" style="display:none;">0 SKIPPED</div>
+                <div id="build-badge" class="build-badge" style="display:none;"></div>
+                <button id="flip-btn" class="flip-btn" onclick="flipUI()" title="Toggle analytics view">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
+                        <path d="M2 4h12M2 8h8M2 12h10"/>
+                        <circle cx="13" cy="8" r="2" fill="currentColor" stroke="none"/>
+                    </svg>
+                    ANALYTICS
+                </button>
                 <div class="live-indicator test-mode"><span class="dot orange"></span> TEST MODE</div>
             </div>
         </header>
@@ -137,6 +145,39 @@
                     <div class="node-sub">SAFE</div>
                 </div>
             </section>
+        </div>
+
+        <!-- ─── Analytics Panel (FLIP view) ─────────────────────────────────── -->
+        <div id="analytics-panel" class="analytics-panel" style="display:none;">
+            <div class="analytics-row">
+                <!-- PnL Curve -->
+                <div class="analytics-card wide">
+                    <div class="analytics-card-title">CUMULATIVE P&amp;L CURVE</div>
+                    <svg id="pnl-chart" class="pnl-chart" preserveAspectRatio="none"></svg>
+                </div>
+                <!-- Strategy Breakdown -->
+                <div class="analytics-card">
+                    <div class="analytics-card-title">STRATEGY BREAKDOWN</div>
+                    <div id="strat-breakdown-body"></div>
+                </div>
+            </div>
+            <div class="analytics-row">
+                <!-- Market Reputation -->
+                <div class="analytics-card stretch">
+                    <div class="analytics-card-title">MARKET REPUTATION &nbsp;<span style="font-size:9px;opacity:0.5">— session learning (updates after 5+ closed trades)</span></div>
+                    <table class="analytics-table" id="reputation-table">
+                        <thead><tr>
+                            <th>MARKET</th>
+                            <th>TRADES</th>
+                            <th>WIN RATE</th>
+                            <th>SESSION P&amp;L</th>
+                            <th>SCORE MULT</th>
+                            <th>STATUS</th>
+                        </tr></thead>
+                        <tbody id="reputation-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <!-- ─── Trades Panel ──────────────────────────────────────────────── -->
@@ -331,6 +372,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
-    <script src="js/app.js?v=4"></script>
+    <script src="js/app.js?v=5"></script>
 </body>
 </html>
