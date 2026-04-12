@@ -85,6 +85,22 @@ public class PolymarketService {
     }
 
     /**
+     * Fetches weather/science category markets regardless of liquidity rank.
+     * Weather markets are niche and often outside the top-200 by liquidity.
+     */
+    public Mono<List<Map<String, Object>>> fetchWeatherMarkets() {
+        return webClient.get()
+                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=100&tag_slug=weather")
+                .retrieve()
+                .bodyToMono(List.class)
+                .map(list -> (List<Map<String, Object>>) list)
+                .onErrorResume(e -> {
+                    log.warn("Weather-category fetch unavailable (tag may not exist): {}", e.getMessage());
+                    return Mono.just(Collections.emptyList());
+                });
+    }
+
+    /**
      * Fetches live prices for a specific market asset.
      */
     public Mono<Map<String, Object>> getMarketPrice(String assetId) {

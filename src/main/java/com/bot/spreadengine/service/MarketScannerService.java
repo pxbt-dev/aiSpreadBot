@@ -137,9 +137,17 @@ public class MarketScannerService {
     @Scheduled(fixedRate = 120_000) // Every 2 minutes
     public void scan() {
         log.info("🔍 Market scanner starting...");
-        polymarketService.fetchActiveMarkets()
-            .flatMapMany(markets -> Flux.fromIterable(markets))
-            .flatMap(market -> {
+        // Merge top-200-by-liquidity with a dedicated weather-category fetch.
+        // Weather markets are niche and often outside the liquidity top-200.
+        Flux<Map<String, Object>> marketFlux = Flux.merge(
+                polymarketService.fetchActiveMarkets().flatMapMany(Flux::fromIterable),
+                polymarketService.fetchWeatherMarkets().flatMapMany(Flux::fromIterable)
+            )
+            .distinct(m -> {
+                String[] ids = parseClobTokenIds(m.getOrDefault("clobTokenIds", null));
+                return ids[0].isEmpty() ? m.getOrDefault("id", m.hashCode()) : ids[0];
+            });
+        marketFlux.flatMap(market -> {
                 String question = (String) market.getOrDefault("question", "Unknown");
                 double liquidity = toDouble(market.getOrDefault("liquidity", 0));
 
