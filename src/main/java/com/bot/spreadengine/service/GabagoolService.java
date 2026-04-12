@@ -51,15 +51,18 @@ public class GabagoolService {
     private final PositionService positionService;
     private final RiskManagementService riskManagementService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final PerformanceTracker performanceTracker;
 
     public GabagoolService(PolymarketService polymarketService,
                            PositionService positionService,
                            RiskManagementService riskManagementService,
-                           SimpMessagingTemplate messagingTemplate) {
+                           SimpMessagingTemplate messagingTemplate,
+                           PerformanceTracker performanceTracker) {
         this.polymarketService   = polymarketService;
         this.positionService     = positionService;
         this.riskManagementService = riskManagementService;
         this.messagingTemplate   = messagingTemplate;
+        this.performanceTracker  = performanceTracker;
     }
 
     // ─── State ─────────────────────────────────────────────────────────────────
@@ -257,6 +260,8 @@ public class GabagoolService {
                     positionService.addTrade(loseToken, pair.getQuestion() + " [" + loseSide + "]",
                                              "SELL", loseQty, 0.00, "GABAGOOL");
 
+                    performanceTracker.record(pair.getYesTokenId(), settledProfit, "GABAGOOL", false);
+
                     log.info("✅ [Gabagool] SETTLED {} — {} won, profit +${} (locked was +${})",
                         pair.getPairId(), winSide,
                         String.format("%.4f", settledProfit),
@@ -272,6 +277,7 @@ public class GabagoolService {
                 // Check if pair has been open too long (> 6h without resolution — likely stale data)
                 if (pair.getOpenedAt().isBefore(Instant.now().minus(6, ChronoUnit.HOURS))) {
                     log.warn("[Gabagool] Pair {} open for > 6h without resolution — marking stale", pair.getPairId());
+                    performanceTracker.record(pair.getYesTokenId(), 0.0, "GABAGOOL", false);
                     pair.setResolved(true);
                 }
                 return false;
