@@ -148,7 +148,8 @@ public class SimulationEngine {
             boolean isLong = existingPos.getSide().equalsIgnoreCase("BUY");
             isBid = !isLong; // long → post ASK to flatten; short → post BID to flatten
         } else {
-            isBid = random.nextBoolean();
+            isBid = true; // No position: always BUY first — Polymarket has no naked shorts.
+                          // The spread is captured on the sell side once a long is established.
         }
 
         int qty = liveMode ? 1 : 1 + random.nextInt(5);
