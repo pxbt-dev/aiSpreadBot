@@ -119,22 +119,23 @@ public class SimulationEngine {
         }
 
         MarketScannerService.ScannedMarket scanned = scannerMarkets.get(random.nextInt(scannerMarkets.size()));
-        String tokenId = scanned.tokenId();
-        String ticker  = scanned.question().length() > 40
+        String tokenId    = scanned.tokenId();
+        String ticker     = scanned.question().length() > 40
             ? scanned.question().substring(0, 37) + "..." : scanned.question();
+        double cachedMid  = scanned.mid(); // Gamma snapshot — used as fallback only
 
-        // Use cached Gamma mid directly — avoids V2 CLOB unavailability entirely
-        double cachedMid = scanned.mid();
-        if (cachedMid > 0) {
-            executeTrade(tokenId, ticker, cachedMid);
-            sendStats();
-            return;
-        }
-
-        // Gamma mid missing for this market — try CLOB as last resort
+        // Always fetch a live CLOB mid so prices reflect current market, not a stale hourly snapshot.
+        // If CLOB is unavailable (V2 outage / inactive book), fall back to the Gamma cached mid.
         polymarketService.getMidpoint(tokenId).subscribe(
-            mid -> { if (mid > 0) { executeTrade(tokenId, ticker, mid); sendStats(); } },
-            err -> log.debug("CLOB mid unavailable for {}: {}", tokenId, err.getMessage())
+            mid -> {
+                double price = (mid > 0) ? mid : cachedMid;
+                if (price > 0) { executeTrade(tokenId, ticker, price); sendStats(); }
+            },
+            err -> {
+                // CLOB error — use Gamma cached price if available
+                if (cachedMid > 0) { executeTrade(tokenId, ticker, cachedMid); sendStats(); }
+                else log.debug("No price available for {}: {}", tokenId, err.getMessage());
+            }
         );
     }
 

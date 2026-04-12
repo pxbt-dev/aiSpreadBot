@@ -221,27 +221,23 @@ public class MarketScannerService {
 
                 // Primary: best non-weather market for market-making
                 // Secondary: best weather market for arb; fall back to second-best overall
-                ScannedMarket primary = markets.stream()
+                // Add all non-weather candidates for market-making diversity (up to 8)
+                List<ScannedMarket> mmMarkets = markets.stream()
                     .filter(m -> !m.isWeather())
-                    .findFirst()
-                    .orElse(markets.get(0));
+                    .collect(java.util.stream.Collectors.toList());
+                if (mmMarkets.isEmpty()) mmMarkets.add(markets.get(0)); // fallback: use best overall
 
-                ScannedMarket secondary = markets.stream()
-                    .filter(m -> m.isWeather() && !m.tokenId().equals(primary.tokenId()))
+                // Add the best weather market for weather arb (if any)
+                markets.stream()
+                    .filter(ScannedMarket::isWeather)
                     .findFirst()
-                    .orElse(markets.stream()
-                        .filter(m -> !m.tokenId().equals(primary.tokenId()))
-                        .findFirst()
-                        .orElse(null));
+                    .ifPresent(mmMarkets::add);
 
-                activeMarkets.add(primary);
-                if (secondary != null && !secondary.tokenId().equals(primary.tokenId())) {
-                    activeMarkets.add(secondary);
-                }
+                activeMarkets.addAll(mmMarkets);
 
                 log.info("✅ Scanner selected {} markets:", activeMarkets.size());
                 activeMarkets.forEach(m -> log.info("  → [{}] mid={} — {}",
-                    m.isWeather() ? "WEATHER/ARB" : "PRIMARY/MM", String.format("%.3f", m.mid()), m.question()));
+                    m.isWeather() ? "WEATHER/ARB" : "MM", String.format("%.3f", m.mid()), m.question()));
 
                 if (weatherCount == 0) {
                     log.warn("⚠️ No weather markets found in top 200 active markets — weather arb disabled until next scan");
