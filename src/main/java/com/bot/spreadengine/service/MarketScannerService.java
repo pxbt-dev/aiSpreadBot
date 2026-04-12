@@ -193,37 +193,37 @@ public class MarketScannerService {
                         : (noTokenId != null
                             ? polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0)
                             : Mono.just(0.0));
-                    return yesMidMono.zipWith(noMidMono, (yesMid, noMid) -> {
-                        // ── Penny market filter: skip markets priced under $0.01 ──────────
-                        // A $0.002 spread on a sub-cent market is 20-36% of price — physically
-                        // impossible to fill and inflates simulated PnL with phantom gains.
-                        if (yesMid > 0 && yesMid < 0.01) {
-                            log.debug("🪙 PENNY FILTER: skipping {} (mid={})", question, yesMid);
-                            return null; // filtered out below
-                        }
+                    return yesMidMono.zipWith(noMidMono)
+                        .flatMap(prices -> {
+                            double yesMid = prices.getT1();
+                            double noMid  = prices.getT2();
+                            // ── Penny market filter ───────────────────────────────────────
+                            // A $0.002 spread on a sub-cent market is 20-36% of price —
+                            // impossible to fill and inflates simulated PnL with phantom gains.
+                            if (yesMid > 0 && yesMid < 0.01) {
+                                log.debug("🪙 PENNY FILTER: skipping {} (mid={})", question, yesMid);
+                                return Mono.empty();
+                            }
 
-                        double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
-                        // ── Learning: apply session win-rate multiplier ───────────────────
-                        double perfMultiplier = performanceTracker.getScoreMultiplier(tokenId);
-                        double score = liquidity * proximity * (isWeather ? 2.0 : 1.0) * perfMultiplier;
-                        double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
-                        if (Math.abs(arbSpread) > 0.03) {
-                            log.warn("⚖️ ARB INVARIANT: YES={} + NO={} = {} (spread={}) — {}",
-                                String.format("%.3f", yesMid), String.format("%.3f", noMid),
-                                String.format("%.3f", yesMid + noMid), String.format("%+.3f", arbSpread), question);
-                        }
-                        // Cache start time keyed by both token IDs for RiskManagementService lookup
-                        if (gameStartTime != null) {
-                            tokenGameStartTimes.put(tokenId, gameStartTime);
-                            if (noTokenId != null) tokenGameStartTimes.put(noTokenId, gameStartTime);
-                        }
-                        tokenRewardTiers.put(tokenId, rewardPerGame);
-                        if (noTokenId != null) tokenRewardTiers.put(noTokenId, rewardPerGame);
-                        return new ScannedMarket(tokenId, noTokenId, question, yesMid, noMid, score, isWeather, arbSpread, gameStartTime, rewardPerGame);
-                    });
+                            double proximity = 1.0 - Math.abs(yesMid - 0.5) * 2.0;
+                            double perfMultiplier = performanceTracker.getScoreMultiplier(tokenId);
+                            double score = liquidity * proximity * (isWeather ? 2.0 : 1.0) * perfMultiplier;
+                            double arbSpread = noMid > 0 ? 1.0 - (yesMid + noMid) : 0.0;
+                            if (Math.abs(arbSpread) > 0.03) {
+                                log.warn("⚖️ ARB INVARIANT: YES={} + NO={} = {} (spread={}) — {}",
+                                    String.format("%.3f", yesMid), String.format("%.3f", noMid),
+                                    String.format("%.3f", yesMid + noMid), String.format("%+.3f", arbSpread), question);
+                            }
+                            if (gameStartTime != null) {
+                                tokenGameStartTimes.put(tokenId, gameStartTime);
+                                if (noTokenId != null) tokenGameStartTimes.put(noTokenId, gameStartTime);
+                            }
+                            tokenRewardTiers.put(tokenId, rewardPerGame);
+                            if (noTokenId != null) tokenRewardTiers.put(noTokenId, rewardPerGame);
+                            return Mono.just(new ScannedMarket(tokenId, noTokenId, question, yesMid, noMid, score, isWeather, arbSpread, gameStartTime, rewardPerGame));
+                        });
                 });
             })
-            .filter(java.util.Objects::nonNull) // remove penny-market nulls
             .sort((a, b) -> Double.compare(b.score(), a.score()))
             .take(10) // Wider net so we can split primary/secondary properly
             .collectList()
