@@ -1,7 +1,29 @@
 {
   "permissions": {
     "allow": [
-      "Bash(file /home/admin/dev/IdeaProjects/aiSpreadBot/models/*)"
+      "Bash(file /home/admin/dev/IdeaProjects/aiSpreadBot/models/*)",
+      "Bash(curl -s http://localhost:8080/api/status)",
+      "Bash(python3 -m json.tool)",
+      "Bash(grep -n \"server.port\\\\|PORT\" /home/admin/dev/IdeaProjects/aiSpreadBot/src/main/resources/application*.yml)",
+      "Bash(curl -s http://localhost:8080/swagger-ui/index.html)",
+      "Bash(curl -sv http://localhost:8080/swagger-ui/index.html)",
+      "Bash(mvn dependency:resolve -q)",
+      "Bash(mvn dependency:resolve)",
+      "Read(//home/admin/.m2/repository/me/paulschwarz/spring-dotenv/**)",
+      "Read(//home/admin/.m2/repository/me/paulschwarz/spring-dotenv/4.0.0/**)",
+      "Bash(unzip -p ~/.m2/repository/me/paulschwarz/spring-dotenv/4.0.0/spring-dotenv-4.0.0.jar META-INF/spring.factories)",
+      "Bash(awk -F',' 'NR>1 {sum += $6} END {printf \"Sum of realized_pnl: %.6f\\\\n\", sum}' spread-engine-trades-2026-04-12.csv)",
+      "Read(//home/admin/**)",
+      "Read(//home/admin/Downloads/**)",
+      "Bash(awk -F',' 'NR>1 {sum += $6} END {printf \"Sum of realized_pnl: %.6f\\\\n\", sum}' /home/admin/Downloads/spread-engine-trades-2026-04-12.csv)",
+      "Bash(awk -F, 'NR>1 {:*)",
+      "Bash(awk -F',' 'NR>1 && $3==\"SELL\" && $4>1 {print $0}' /home/admin/Downloads/spread-engine-trades-2026-04-12.csv)",
+      "Bash(awk -F, 'NR>1 && $3==\"SELL\" {:*)",
+      "Bash(awk -F, 'NR>1 && $3==\"BUY\" {:*)",
+      "Bash(awk -F, 'NR>1 && $3==\"SELL\" && $6+0 < 0 {:*)",
+      "Bash(sort -t= -k2 -n)",
+      "Bash(awk -F',' 'NR>1 && $3==\"BUY\" {printf \"price=%.3f qty=%s pnl=%.4f %s\\\\n\", $5, $4, $6, $2}' /home/admin/Downloads/spread-engine-trades-2026-04-12.csv)",
+      "Bash(mvn compile:*)"
     ]
   }
 }

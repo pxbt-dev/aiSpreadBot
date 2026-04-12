@@ -8,18 +8,15 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 const edges = [
-    { from: 'node-scanner', to: 'node-post-bid' },
-    { from: 'node-weather', to: 'node-post-ask' },
-    { from: 'node-weka', to: 'node-bot' },
-    { from: 'node-revert', to: 'node-post-bid' },
-    { from: 'node-post-bid', to: 'node-bot' },
-    { from: 'node-post-ask', to: 'node-bot' },
-    { from: 'node-bot', to: 'node-spread' },
-    { from: 'node-bot', to: 'node-inventory' },
-    { from: 'node-bot', to: 'node-vpin' },
-    { from: 'node-spread', to: 'node-profit' },
-    { from: 'node-profit', to: 'node-bankroll' },
-    { from: 'node-vpin', to: 'node-kill' }
+    { from: 'node-scanner', to: 'node-bot' },
+    { from: 'node-weka',    to: 'node-bot' },
+    { from: 'node-weather', to: 'node-bot' },
+    { from: 'node-bot',     to: 'node-spread' },
+    { from: 'node-bot',     to: 'node-inventory' },
+    { from: 'node-bot',     to: 'node-vpin' },
+    { from: 'node-spread',  to: 'node-profit' },
+    { from: 'node-profit',  to: 'node-bankroll' },
+    { from: 'node-vpin',    to: 'node-kill' }
 ];
 
 function initSvgConnections() {
@@ -126,26 +123,42 @@ function handleStats(stats) {
     };
     const getPnLClass = (val) => (Number(val) >= 0 ? 'green' : 'loss-red');
 
+    // Graph node: REALIZED
     const profit = stats.profit;
     const profitEl = document.getElementById('val-profit');
     if (profitEl) {
         profitEl.innerText = formatPnL(profit);
         profitEl.className = 'node-val ' + getPnLClass(profit);
     }
+    // Graph node: wins / losses sub-text
     const winsEl = document.getElementById('val-gross-wins');
     if (winsEl) winsEl.innerText = '+$' + Math.abs(Number(stats.grossWins || 0)).toFixed(2);
     const lossesEl = document.getElementById('val-gross-losses');
     if (lossesEl) lossesEl.innerText = '-$' + Math.abs(Number(stats.grossLosses || 0)).toFixed(2);
 
-    const bankrollFormatted = '$' + Number(stats.bankroll).toLocaleString();
-    setVal('val-bankroll', bankrollFormatted);
+    // Hero header: REALIZED
+    const realizedHdr = document.getElementById('val-realized-hdr');
+    if (realizedHdr) {
+        realizedHdr.innerText = formatPnL(profit);
+        realizedHdr.className = 'hero-val ' + getPnLClass(profit);
+    }
+    const winsHdr = document.getElementById('val-gross-wins-hdr');
+    if (winsHdr) winsHdr.innerText = '+$' + Math.abs(Number(stats.grossWins || 0)).toFixed(2);
+    const lossesHdr = document.getElementById('val-gross-losses-hdr');
+    if (lossesHdr) lossesHdr.innerText = '-$' + Math.abs(Number(stats.grossLosses || 0)).toFixed(2);
+
+    // Hero header + graph node: BANKROLL
+    const bankrollFormatted = '$' + Number(stats.bankroll).toFixed(2);
+    const bankrollHdr = document.getElementById('val-bankroll');
+    if (bankrollHdr) bankrollHdr.innerText = bankrollFormatted;
     setVal('val-bankroll-node', bankrollFormatted);
-    
+
+    // Hero header + footer: NET GAIN
     const sessionPnL = stats.sessionPnL;
     const sPnlHdr = document.getElementById('val-session-pnl-hdr');
     if (sPnlHdr) {
         sPnlHdr.innerText = formatPnL(sessionPnL);
-        sPnlHdr.className = 'value ' + getPnLClass(sessionPnL);
+        sPnlHdr.className = 'hero-val ' + getPnLClass(sessionPnL);
     }
     const sPnlFtr = document.getElementById('val-session-pnl-ftr');
     if (sPnlFtr) {
@@ -570,13 +583,10 @@ function triggerNodePulse(type) {
             pulseNode('node-weka', 0);
             spawnParticle('node-weka', 'node-bot');
             break;
-        case 'TRADE': 
+        case 'TRADE':
         case 'TEST_FILL':
-            spawnParticle('node-scanner', 'node-post-bid', () => {
-                pulseNode('node-post-bid', 0);
-                spawnParticle('node-post-bid', 'node-bot', () => {
-                    pulseNode('node-bot', 0);
-                });
+            spawnParticle('node-scanner', 'node-bot', () => {
+                pulseNode('node-bot', 0);
             });
             break;
         case 'SPREAD': 
@@ -597,16 +607,16 @@ function triggerNodePulse(type) {
                 }
             });
             break;
-        case 'MEAN_REVERT': 
-            spawnParticle('node-revert', 'node-post-bid', () => {
-                pulseNode('node-post-bid', 0);
+        case 'MEAN_REVERT':
+            spawnParticle('node-weka', 'node-bot', () => {
+                pulseNode('node-bot', 0);
             });
             break;
-        case 'WEATHER_ARB': 
-            spawnParticle('node-weather', 'node-post-ask', () => {
-                pulseNode('node-post-ask', 0);
-                spawnParticle('node-post-ask', 'node-bot', () => {
-                    pulseNode('node-bot', 0);
+        case 'WEATHER_ARB':
+            spawnParticle('node-weather', 'node-bot', () => {
+                pulseNode('node-bot', 0);
+                spawnParticle('node-bot', 'node-spread', () => {
+                    pulseNode('node-spread', 0);
                 });
             });
             break;
