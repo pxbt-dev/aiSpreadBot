@@ -55,14 +55,17 @@ public class PolymarketService {
     }
 
     /**
-     * Fetches top trending events from Polymarket Gamma API.
+     * Fetches top trending events from Polymarket Gamma API (keyset pagination).
      */
     public Mono<List<Map<String, Object>>> getTrendingEvents() {
         return webClient.get()
-                .uri(GAMMA_BASE_URL + "/events?limit=10&active=true")
+                .uri(GAMMA_BASE_URL + "/events/keyset?limit=10&active=true")
                 .retrieve()
-                .bodyToMono(List.class)
-                .map(list -> (List<Map<String, Object>>) list)
+                .bodyToMono(Map.class)
+                .map(map -> {
+                    Object events = map.get("events");
+                    return events instanceof List ? (List<Map<String, Object>>) events : Collections.<Map<String, Object>>emptyList();
+                })
                 .onErrorResume(e -> {
                     log.error("Error fetching trending events from Polymarket: {}", e.getMessage());
                     return Mono.just(Collections.emptyList());
@@ -70,14 +73,17 @@ public class PolymarketService {
     }
 
     /**
-     * Fetches active, non-closed markets from Gamma API ordered by liquidity.
+     * Fetches active, non-closed markets from Gamma API ordered by liquidity (keyset pagination).
      */
     public Mono<List<Map<String, Object>>> fetchActiveMarkets() {
         return webClient.get()
-                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=200&order=liquidity&ascending=false")
+                .uri(GAMMA_BASE_URL + "/markets/keyset?active=true&closed=false&limit=200&order=liquidity&ascending=false")
                 .retrieve()
-                .bodyToMono(List.class)
-                .map(list -> (List<Map<String, Object>>) list)
+                .bodyToMono(Map.class)
+                .map(map -> {
+                    Object markets = map.get("markets");
+                    return markets instanceof List ? (List<Map<String, Object>>) markets : Collections.<Map<String, Object>>emptyList();
+                })
                 .onErrorResume(e -> {
                     log.error("Error fetching active markets: {}", e.getMessage());
                     return Mono.just(Collections.emptyList());
@@ -85,15 +91,18 @@ public class PolymarketService {
     }
 
     /**
-     * Fetches weather/science category markets regardless of liquidity rank.
+     * Fetches weather/science category markets regardless of liquidity rank (keyset pagination).
      * Weather markets are niche and often outside the top-200 by liquidity.
      */
     public Mono<List<Map<String, Object>>> fetchWeatherMarkets() {
         return webClient.get()
-                .uri(GAMMA_BASE_URL + "/markets?active=true&closed=false&limit=100&tag_slug=weather")
+                .uri(GAMMA_BASE_URL + "/markets/keyset?active=true&closed=false&limit=100&tag_slug=weather")
                 .retrieve()
-                .bodyToMono(List.class)
-                .map(list -> (List<Map<String, Object>>) list)
+                .bodyToMono(Map.class)
+                .map(map -> {
+                    Object markets = map.get("markets");
+                    return markets instanceof List ? (List<Map<String, Object>>) markets : Collections.<Map<String, Object>>emptyList();
+                })
                 .onErrorResume(e -> {
                     log.warn("Weather-category fetch unavailable (tag may not exist): {}", e.getMessage());
                     return Mono.just(Collections.emptyList());
