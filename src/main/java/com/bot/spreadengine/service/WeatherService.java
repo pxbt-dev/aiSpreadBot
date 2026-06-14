@@ -5,8 +5,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @Slf4j
@@ -16,6 +19,10 @@ public class WeatherService {
 
     // NOAA NWS gridpoint for NYC Central Park (OKX office, grid 33,37)
     private static final String NOAA_FORECAST_URL = "https://api.weather.gov/gridpoints/OKX/33,37/forecast";
+    private static final Duration CACHE_TTL = Duration.ofMinutes(10);
+
+    private final AtomicReference<Map<String, Object>> cachedForecast = new AtomicReference<>();
+    private volatile Instant cacheTime = Instant.EPOCH;
 
     public WeatherService(WebClient.Builder webClientBuilder) {
         this.webClient = webClientBuilder
@@ -24,14 +31,23 @@ public class WeatherService {
     }
 
     public Mono<Map<String, Object>> getLiveForecast() {
+        Map<String, Object> cached = cachedForecast.get();
+        if (cached != null && Duration.between(cacheTime, Instant.now()).compareTo(CACHE_TTL) < 0) {
+            return Mono.just(cached);
+        }
         return webClient.get()
                 .uri(NOAA_FORECAST_URL)
                 .retrieve()
                 .bodyToMono(Map.class)
-                .map(map -> (Map<String, Object>) map)
+                .map(map -> {
+                    Map<String, Object> result = (Map<String, Object>) map;
+                    cachedForecast.set(result);
+                    cacheTime = Instant.now();
+                    return result;
+                })
                 .onErrorResume(e -> {
-                    log.error("Error fetching NOAA forecast: {}", e.getMessage());
-                    return Mono.empty();
+                    log.warn("NOAA forecast unavailable ({}), using cached/fallback", e.getMessage());
+                    return cached != null ? Mono.just(cached) : Mono.empty();
                 });
     }
 

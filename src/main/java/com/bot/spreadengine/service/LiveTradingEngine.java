@@ -14,7 +14,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 @Slf4j
@@ -71,6 +73,12 @@ public class LiveTradingEngine {
     private final Map<String, List<Double[]>> priceBuffers = new ConcurrentHashMap<>();
     private static final int BUFFER_SIZE = 50;
 
+    private final AtomicBoolean marketMakingRunning = new AtomicBoolean(false);
+    private final AtomicBoolean weatherArbRunning   = new AtomicBoolean(false);
+    private final AtomicBoolean pureArbRunning      = new AtomicBoolean(false);
+    private final AtomicBoolean aiInsightsRunning   = new AtomicBoolean(false);
+    private int bufferCleanupCounter = 0;
+
     // Token IDs are resolved dynamically by MarketScannerService at startup and refreshed hourly
 
     @Scheduled(fixedRate = 3600000) // Hourly Solar Update
@@ -86,9 +94,20 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 2000)
     public void executeMarketMaking() {
+        if (!marketMakingRunning.compareAndSet(false, true)) return;
         String tokenId = marketScanner.getPrimaryTokenId();
-        if (tokenId == null) return;
+        if (tokenId == null) { marketMakingRunning.set(false); return; }
+        if (++bufferCleanupCounter >= 60) {
+            bufferCleanupCounter = 0;
+            Set<String> live = new java.util.HashSet<>();
+            marketScanner.getActiveMarkets().forEach(m -> {
+                live.add(m.tokenId());
+                if (m.noTokenId() != null) live.add(m.noTokenId());
+            });
+            priceBuffers.keySet().retainAll(live);
+        }
         polymarketService.getMidpoint(tokenId)
+            .doFinally(signal -> marketMakingRunning.set(false))
             .subscribe(midpoint -> {
                 addToBuffer(tokenId, midpoint, 100.0);
                 
@@ -173,6 +192,7 @@ public class LiveTradingEngine {
             log.debug("⛅ No weather market available — scanner found none in top 200");
             return;
         }
+        if (!weatherArbRunning.compareAndSet(false, true)) return;
         String tokenId = market.tokenId();
         String marketTicker = market.question().length() > 40
             ? market.question().substring(0, 37) + "..."
@@ -180,6 +200,7 @@ public class LiveTradingEngine {
         // Fetch full NOAA conditions (precip, tempC, humidity) alongside the market mid
         weatherService.getCurrentConditions()
             .zipWith(polymarketService.getMidpoint(tokenId).onErrorResume(e -> Mono.empty()))
+            .doFinally(signal -> weatherArbRunning.set(false))
             .subscribe(tuple -> {
                 double[] noaa   = tuple.getT1();
                 double noaaProb = noaa[0];
@@ -313,7 +334,9 @@ public class LiveTradingEngine {
     @Scheduled(fixedRate = 15000)
     public void executePureArb() {
         if (riskManagementService.isKillSwitchActive()) return;
+        if (!pureArbRunning.compareAndSet(false, true)) return;
 
+        boolean subscribed = false;
         for (MarketScannerService.ScannedMarket market : marketScanner.getActiveMarkets()) {
             // Pre-filter using cached scan prices — avoids CLOB calls for obvious non-arbs
             if (market.arbSpread() <= PURE_ARB_THRESHOLD) continue;
@@ -329,6 +352,7 @@ public class LiveTradingEngine {
             // Fetch live CLOB prices before committing — scan prices can be up to 1hr stale
             polymarketService.getMidpoint(yesTokenId)
                 .zipWith(polymarketService.getMidpoint(noTokenId).onErrorReturn(0.0))
+                .doFinally(signal -> pureArbRunning.set(false))
                 .subscribe((prices) -> {
                     double yesMid = prices.getT1();
                     double noMid  = prices.getT2();
@@ -363,8 +387,10 @@ public class LiveTradingEngine {
                 }, error -> log.error("Error fetching live prices for pure arb {}: {}", ticker, error.getMessage()));
 
             // Only evaluate one candidate per cycle — async, so break after subscribing
+            subscribed = true;
             break;
         }
+        if (!subscribed) pureArbRunning.set(false);
     }
 
     @lombok.Data
@@ -383,7 +409,10 @@ public class LiveTradingEngine {
 
     @Scheduled(fixedRate = 5000)
     public void broadcastAiInsights() {
-        weatherService.getCurrentConditions().subscribe(noaa -> {
+        if (!aiInsightsRunning.compareAndSet(false, true)) return;
+        weatherService.getCurrentConditions()
+            .doFinally(signal -> aiInsightsRunning.set(false))
+            .subscribe(noaa -> {
             double normalizedTemp = Math.max(0.0, Math.min(1.0, (noaa[1] + 20.0) / 60.0));
             double[] features = new double[]{noaa[0], normalizedTemp, noaa[2], solarMultiplier};
             runAiInsightsBroadcast(features);

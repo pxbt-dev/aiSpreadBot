@@ -245,11 +245,8 @@ public class ClaudeAnalysisService {
                         log.warn("Claude market validation unavailable — allowing market: {}", e.getMessage());
                         return Mono.just(true);
                     })
-                    .doOnSuccess(result -> {
-                        // Persist to result cache and remove from in-flight map
-                        weatherCache.put(title, result);
-                        inflightValidations.remove(title);
-                    })
+                    .doOnSuccess(result -> weatherCache.put(title, result))
+                    .doFinally(signal -> inflightValidations.remove(title))
                     .cache(); // make the Mono replayable so all subscribers share the one result
         });
     }

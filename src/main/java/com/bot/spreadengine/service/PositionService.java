@@ -109,6 +109,7 @@ public class PositionService {
             realizedTradePnL,
             strategy
         ));
+        if (tradeHistory.size() > 1000) tradeHistory.remove(0);
 
         totalTrades++;
 
